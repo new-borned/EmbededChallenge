@@ -31,7 +31,8 @@
 #define CTRL_PERIOD_MS    20
 #define SENS_PERIOD_MS    20
 #define IR_PERIOD_MS      20
-#define DBG_PERIOD_MS     500       /* DebugTask periodic snapshot cadence */
+#define DBG_PERIOD_MS     100       /* DebugTask tick — LED refresh rate */
+#define DBG_PRINT_DIVIDER 5         /* printf snapshot every N ticks (500ms) */
 #define TASK_WARMUP_MS    200
 #define CTRL_WARMUP_MS    300
 
@@ -170,6 +171,13 @@ static int  emerg_turn_deg  = EMERG_US_DEG;   /* committed rotation magnitude */
 static int  seek_clear_ticks = 0;
 static int  veer_cooldown_ticks = 0;   /* ALIGN_PROGRESS VEER lockout counter */
 #define EMERG_RELEASE_TICKS  25     /* ~500ms of clear SEEK -> release commit */
+
+/* VEER LED display — DebugTask shows LED1 (R wall close) / LED4 (L wall close)
+ * for VEER_LED_SHOW_TICKS DebugTask ticks after each VEER fires, so the
+ * transient side-US trigger is visible even though state stays ALIGN_PROGRESS. */
+static int  veer_show_ticks = 0;
+static bool veer_show_left  = false;   /* false=R wall (LED1), true=L wall (LED4) */
+#define VEER_LED_SHOW_TICKS  20        /* 20 * DBG_PERIOD_MS = 2s */
 
 /* ===========================================================================
  *  Forward declarations
@@ -350,10 +358,18 @@ void IR_Task(void *arg)
 
 /* ===========================================================================
  *  Debug Layer — DebugTask
- *  Two outputs:
- *    1) Edge log on every FSM state transition (printed once per change).
- *    2) Periodic snapshot every DBG_PERIOD_MS with distances, stddev, side,
- *       emergency-commit info, and IR readings.
+ *  Three outputs, refreshed every DBG_PERIOD_MS:
+ *    1) LED visualization, priority high->low:
+ *         a) VEER overlay (~2s after each VEER fires, even while ALIGN_PROG):
+ *              LED1 = R-side US trigger,  LED4 = L-side US trigger
+ *         b) EMERGENCY state, trigger source (committed in ControlTask):
+ *              Front US : LED1+LED2+LED3+LED4 blink all (~5Hz)
+ *              IR left  : LED2 solid
+ *              IR right : LED3 solid
+ *         c) Default: LED1..LED3 = state code binary, LED4 = side (R=0 / L=1)
+ *    2) Edge log on every FSM state / side transition (printed once per change).
+ *    3) Periodic snapshot every DBG_PRINT_DIVIDER ticks (= 500ms) with
+ *       distances, stddev, side, emergency-commit info, and IR readings.
  *  Lowest priority so it never starves Sensor/IR/Control.
  * =========================================================================== */
 void DebugTask(void *arg)
@@ -368,6 +384,45 @@ void DebugTask(void *arg)
 
     osDelay(TASK_WARMUP_MS);
     for (;;) {
+        /* --- LED priority cascade ------------------------------------- */
+        if (veer_show_ticks > 0) {
+            veer_show_ticks--;
+            BSP_LED_Off(LED1);
+            BSP_LED_Off(LED2);
+            BSP_LED_Off(LED3);
+            BSP_LED_Off(LED4);
+            if (veer_show_left) BSP_LED_On(LED4);
+            else                BSP_LED_On(LED1);
+        } else if (state == EMERGENCY) {
+            /* Trigger source committed in ControlTask EMERGENCY branch:
+             *   emerg_turn_deg == EMERG_US_DEG  => front US (blink all)
+             *   else IR; emerg_turn_left == true  => right bumper (LED3)
+             *                          false => left  bumper (LED2)        */
+            BSP_LED_Off(LED1);
+            BSP_LED_Off(LED2);
+            BSP_LED_Off(LED3);
+            BSP_LED_Off(LED4);
+            if (emerg_turn_deg == EMERG_US_DEG) {
+                if ((tick & 1) == 0) {
+                    BSP_LED_On(LED1);
+                    BSP_LED_On(LED2);
+                    BSP_LED_On(LED3);
+                    BSP_LED_On(LED4);
+                }
+            } else if (emerg_turn_left) {
+                BSP_LED_On(LED3);   /* R bumper -> turn L */
+            } else {
+                BSP_LED_On(LED2);   /* L bumper -> turn R */
+            }
+        } else {
+            uint8_t s = (uint8_t)state;
+            (s & 0x1) ? BSP_LED_On(LED1) : BSP_LED_Off(LED1);
+            (s & 0x2) ? BSP_LED_On(LED2) : BSP_LED_Off(LED2);
+            (s & 0x4) ? BSP_LED_On(LED3) : BSP_LED_Off(LED3);
+            (side == TRACK_LEFT) ? BSP_LED_On(LED4) : BSP_LED_Off(LED4);
+        }
+
+        /* --- Edge log ------------------------------------------------- */
         if (state != prev_state) {
             printf("\r\n[DBG-EDGE] %s -> %s  dF=%d dL=%d dR=%d side=%s",
                    (prev_state == (DriveState)0xFF) ? "?" : state_name[prev_state],
@@ -383,19 +438,23 @@ void DebugTask(void *arg)
             prev_side = side;
         }
 
-        printf("\r\n[DBG #%lu] st=%s side=%s "
-               "d(F/L/R)=%d/%d/%d s(F/L/R)=%d/%d/%d "
-               "emg=%c commit=%c hist=%d ir(L/R/F)=%d/%d/%d",
-               (unsigned long)tick++,
-               state_name[state],
-               side == TRACK_RIGHT ? "R" : "L",
-               dF, dL, dR,
-               sF, sL, sR,
-               isEmergency() ? '1' : '0',
-               emerg_committed ? (emerg_turn_left ? 'L' : 'R') : '-',
-               hist_count,
-               ir_left, ir_right, ir_floor);
+        /* --- Periodic snapshot (throttled to DBG_PRINT_DIVIDER ticks) - */
+        if ((tick % DBG_PRINT_DIVIDER) == 0) {
+            printf("\r\n[DBG #%lu] st=%s side=%s "
+                   "d(F/L/R)=%d/%d/%d s(F/L/R)=%d/%d/%d "
+                   "emg=%c commit=%c hist=%d ir(L/R/F)=%d/%d/%d",
+                   (unsigned long)tick,
+                   state_name[state],
+                   side == TRACK_RIGHT ? "R" : "L",
+                   dF, dL, dR,
+                   sF, sL, sR,
+                   isEmergency() ? '1' : '0',
+                   emerg_committed ? (emerg_turn_left ? 'L' : 'R') : '-',
+                   hist_count,
+                   ir_left, ir_right, ir_floor);
+        }
 
+        tick++;
         osDelay(DBG_PERIOD_MS);
     }
 }
@@ -652,8 +711,8 @@ bool emergencyResolved(void)
  * @note   States: INIT -> SEEK -> ALIGN_PROGRESS <-> NON_ALIGN_PROGRESS;
  *         EMERGENCY preempts any state when isEmergency() trips and returns
  *         to SEEK after a committed 90° rotate_iterative(). ALIGN_PROGRESS
- *         is the only state that calls angleAdjusting(). LED1 toggles every
- *         ~500ms and a diagnostic line is printed at the same cadence.
+ *         is the only state that calls angleAdjusting(). DebugTask mirrors
+ *         the current state onto LED1..LED4 (see DebugTask comment).
  */
 void ControlTask(void *arg)
 {
@@ -796,6 +855,8 @@ void ControlTask(void *arg)
 
                 if (veer_cooldown_ticks == 0 && dR > 0 && dR < D_MIN) {
                     printf("\r\n>> VEER L deg=%d dR=%d", ROTATE_VEER_DEG, dR);
+                    veer_show_left  = false;             /* R-side trigger -> LED1 */
+                    veer_show_ticks = VEER_LED_SHOW_TICKS;
                     Motor_Stop();
                     osDelay(50);
                     rotate_iterative(ROTATE_VEER_DEG, true);   /* R wall close -> pivot LEFT */
@@ -804,6 +865,8 @@ void ControlTask(void *arg)
                     veer_cooldown_ticks = VEER_COOLDOWN_TICKS;
                 } else if (veer_cooldown_ticks == 0 && dL > 0 && dL < D_MIN) {
                     printf("\r\n>> VEER R deg=%d dL=%d", ROTATE_VEER_DEG, dL);
+                    veer_show_left  = true;              /* L-side trigger -> LED4 */
+                    veer_show_ticks = VEER_LED_SHOW_TICKS;
                     Motor_Stop();
                     osDelay(50);
                     rotate_iterative(ROTATE_VEER_DEG, false);  /* L wall close -> pivot RIGHT */
@@ -888,7 +951,12 @@ int main(void)
     HAL_Init();
     SystemClock_Config();
     BSP_COM1_Init();
-    BSP_LED_Init(LED1);   /* heartbeat in ControlTask */
+    /* LED1..LED4 driven by DebugTask as a 4-bit FSM-state display
+     * (LED1..LED3 = state binary, LED4 = side, all-blink on emerg commit). */
+    BSP_LED_Init(LED1);
+    BSP_LED_Init(LED2);
+    BSP_LED_Init(LED3);
+    BSP_LED_Init(LED4);
 
     /* -------- Motor PWM (TIM8 right, TIM4 left) -------- */
     uwPrescalerValue = (SystemCoreClock / 2) / 1000000;
@@ -1034,16 +1102,13 @@ int main(void)
     HAL_ADC_ConfigChannel(&AdcHandle3, &adcConfig3);
 
     /* -------- RTOS tasks (sizes match main_good) -------- */
-    BSP_LED_Init(LED2);
-    BSP_LED_On(LED1);                /* solid ON pre-scheduler -> blinking = ControlTask alive */
     xTaskCreate(SensorTask,  "sensor",   512, NULL, 3, NULL);
     xTaskCreate(IR_Task,     "ir",       512, NULL, 3, NULL);
     xTaskCreate(ControlTask, "control", 1024, NULL, 2, NULL);
     xTaskCreate(DebugTask,   "debug",    512, NULL, 1, NULL);
     vTaskStartScheduler();
 
-    /* Only reached if scheduler failed -> LED2 solid ON as fault marker */
-    BSP_LED_On(LED2);
+    /* Only reached if scheduler failed */
     while (1) { }
 }
 
