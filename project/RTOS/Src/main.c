@@ -52,16 +52,18 @@
                                      * (motors/wheels asymmetric -- same duty != same speed). */
 #define V_TURN              20000   /* full duty for max pivot torque */
 
-/* Time-based pivot (Option A). The only rotation primitive.
- * 90° = PIVOT_MS_90_x ms of full-duty pivot drive. L/R split because the two
- * wheels have slightly different effective ms-per-degree (motor/encoder
- * asymmetry, supply sag). Tune by 4×90° round-trip calibration (CALIB_PIVOT).
- * Trade-off vs the old tick-based scheme: cheaper code, no encoder reset
- * (so motorInterrupt1/2 act as natural monotonic counters for odometry), but
- * the rotation angle drifts with battery/load. EKF compensates via encoder-
- * derived dth integration; wall-following self-corrects on next sensor pass. */
-#define PIVOT_MS_90_L             500  /* TODO(CALIB_PIVOT): tune until 4×90° LEFT  closes */
-#define PIVOT_MS_90_R             500  /* TODO(CALIB_PIVOT): tune until 4×90° RIGHT closes */
+/* Iterative pivot — the only rotation primitive.
+ * 90° = PIVOT_SUBSTEPS_90_x × PIVOT_SUBSTEP_TICKS encoder ticks total.
+ * L/R split because the two wheels have slightly different effective
+ * ticks-per-degree (motor/encoder asymmetry). Tune by 4×90° round-trip
+ * calibration (CALIB_PIVOT mode); keep tick count fixed.
+ * Note: each micro-pivot uses a start-snapshot of the encoder rather than
+ * resetting it, so motorInterrupt1/2 remain monotonic for odometry. */
+#define PIVOT_SUBSTEP_TICKS       30   /* encoder ticks per micro-pivot (~3°) */
+#define PIVOT_SUBSTEPS_90_L       24   /* micro-pivots for 90° LEFT  (calib 2026-05-27 final) */
+#define PIVOT_SUBSTEPS_90_R       25   /* micro-pivots for 90° RIGHT (calib 2026-05-27 final) */
+#define PIVOT_PAUSE_MS            10   /* brief stop between micro-pivots */
+#define PIVOT_SUBSTEP_TIMEOUT_MS  200  /* per-substep safety */
 #define POST_TURN_SETTLE_MS       300  /* let SensorTask median refresh after pivot */
 
 /* Angle correction (arctan-based, event-driven via rotate_iterative) */
@@ -89,9 +91,9 @@
 #define ESCAPE_FORWARD_MS_IR   500
 #define VEER_COOLDOWN_TICKS    50   /* 50 * CTRL_PERIOD_MS = 1s lockout after each VEER */
 
-/* Pivot calibration mode — when 1, ControlTask skips the FSM and runs four
- * 90° LEFT pivots so PIVOT_MS_90_L can be tuned against floor markings.
- * Set to 0 for normal driving. */
+/* Pivot calibration mode — when 1, ControlTask skips the FSM and runs a
+ * 4x90° round-trip (right then left) so PIVOT_SUBSTEPS_90 can be measured
+ * against floor markings. Set to 0 for normal driving. */
 #define CALIB_PIVOT       0
 
 /* IR calibration mode — when 1, ControlTask skips the FSM, motors stay
@@ -107,7 +109,7 @@
  *   2 = square test: drive a 1 m × 1 m square (forward 100 cm, rotate 90°
  *       right, repeat 4×) and stream the integrated (x, y, theta). Expected
  *       end pose ≈ (0, 0, 0); use the residual to gauge WHEEL_BASE_CM and
- *       PIVOT_MS_90_R quality. Run after CALIB_ODOM=1 values are in odom.h. */
+ *       PIVOT_SUBSTEPS_90_R quality. Run after CALIB_ODOM=1 values are in odom.h. */
 #define CALIB_ODOM        0
 
 /* ===========================================================================
@@ -442,33 +444,58 @@ void Motor_Stop(void)
 }
 
 /**
- * @brief  Time-based open-loop in-place pivot.
+ * @brief  Closed-loop in-place pivot driven by encoder ticks, in micro-steps.
  * @param  degrees  Magnitude of rotation in degrees (positive).
  * @param  left     true => pivot CCW (left turn); false => pivot CW (right).
- * @note   Drives V_TURN on both wheels (opposite signs) for
- *         `PIVOT_MS_90_x * degrees / 90` ms, then stops. No encoder reset —
- *         motorInterrupt1/2 are left alone so they act as monotonic counters
- *         for the odometry layer (uint16_t wrap handled in odom.c). Settles
+ * @note   Decomposes the turn into `PIVOT_SUBSTEPS_90 * degrees / 90`
+ *         micro-pivots, each consuming PIVOT_SUBSTEP_TICKS ticks on the wheel
+ *         that goes forward for this direction. Stops between micro-steps to
+ *         null out inertia. Uses a start-snapshot of the encoder per substep
+ *         instead of resetting it, so motorInterrupt1/2 stay monotonic for
+ *         the odometry layer (uint16_t wrap handled in odom.c). Settles
  *         POST_TURN_SETTLE_MS so the median filter refreshes, then calls
- *         angleHistoryFlush() because heading just changed.
- *         Hardware wiring inverts our software convention; the `left = !left`
- *         flip below keeps every call site (VEER, EMERGENCY, CALIB_PIVOT)
- *         correct in one place.
+ *         angleHistoryFlush() — every rotation invalidates the arctan ring
+ *         buffer's heading assumption.
  */
 void rotate_iterative(int degrees, bool left)
 {
+    /* Hardware wiring inverts our software convention -- callers say "left"
+     * but the original wheel mapping rotates the opposite way. Flip here so
+     * every call site (VEER, EMERGENCY, CALIB_PIVOT) is corrected in one place. */
     left = !left;
-    int ms = (left ? PIVOT_MS_90_L : PIVOT_MS_90_R) * degrees / 90;
-    if (ms <= 0) return;
+    int subs90 = left ? PIVOT_SUBSTEPS_90_L : PIVOT_SUBSTEPS_90_R;
+    int substeps = (subs90 * degrees) / 90;
+    if (substeps <= 0) return;
 
-    if (left) Motor_Drive(-V_TURN,  V_TURN);
-    else      Motor_Drive( V_TURN, -V_TURN);
-    osDelay(ms);
-    Motor_Stop();
+    /* pivot LEFT  (CCW): right wheel forward -> use motorInterrupt1
+     * pivot RIGHT (CW):  left  wheel forward -> use motorInterrupt2 */
+    volatile uint16_t *enc = left ? &motorInterrupt1 : &motorInterrupt2;
 
-    printf("\r\n>> ROT %s deg=%d ms=%d", left ? "L" : "R", degrees, ms);
+    int total_ms = 0;
+    for (int i = 0; i < substeps; i++) {
+        Motor_Stop();
+        osDelay(PIVOT_PAUSE_MS);
+        /* Snapshot encoder at substep start; compare deltas against it
+         * (int16_t cast = wrap-safe signed delta) so the global counter
+         * stays monotonic for odometry. */
+        int16_t start = (int16_t)*enc;
+        if (left) Motor_Drive(-V_TURN,  V_TURN);
+        else      Motor_Drive( V_TURN, -V_TURN);
+        int t = 0;
+        while (t < PIVOT_SUBSTEP_TIMEOUT_MS) {
+            int16_t s = (int16_t)((int16_t)*enc - start);
+            if (s < 0) s = -s;
+            if (s >= PIVOT_SUBSTEP_TICKS) break;
+            osDelay(1);
+            t++;
+        }
+        Motor_Stop();
+        total_ms += t + PIVOT_PAUSE_MS;
+    }
+    printf("\r\n>> ROT-ITER %s deg=%d substeps=%d ms=%d",
+           left ? "L" : "R", degrees, substeps, total_ms);
     osDelay(POST_TURN_SETTLE_MS);
-    angleHistoryFlush();
+    angleHistoryFlush();   /* heading changed -> all prior samples invalid */
 }
 
 /* ===========================================================================
@@ -640,7 +667,7 @@ void ControlTask(void *arg)
 
 #if CALIB_PIVOT
     /* Calibration: 4×90° left only (right side locked from prior calibration).
-     * Mark heading on floor before boot, compare on stop. Tune PIVOT_MS_90_L. */
+     * Mark heading on floor before boot, compare on stop. Tune PIVOT_SUBSTEPS_90_L. */
     osDelay(1000);
     for (int i = 0; i < 4; i++) {
         printf("\r\n>> CALIB L %d/4", i + 1);
@@ -698,7 +725,7 @@ void ControlTask(void *arg)
      * For each side: drive forward until odom reports >= 100 cm displacement
      * from the side start, stop, pivot 90° right via rotate_iterative(). End
      * pose should land near (0, 0, 0); residual quantifies WHEEL_BASE_CM and
-     * PIVOT_MS_90_R error. UART streams pose every 100 ms during forward legs. */
+     * PIVOT_SUBSTEPS_90_R error. UART streams pose every 100 ms during forward legs. */
     osDelay(2000);
     odom_init();
     printf("\r\n>> CALIB_ODOM square start");
