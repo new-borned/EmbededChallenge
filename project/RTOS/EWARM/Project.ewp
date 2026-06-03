@@ -1039,6 +1039,9 @@
       <file>
         <name>$PROJ_DIR$\..\Src\stm32f4xx_it.c</name>
       </file>
+      <file>
+        <name>$PROJ_DIR$\..\Src\odom.c</name>
+      </file>
     </group>
   </group>
 </project>
