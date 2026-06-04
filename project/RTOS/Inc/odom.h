@@ -8,9 +8,10 @@
   *  +y = robot's initial left, theta = CCW from +x in radians.
   *
   *  Encoder source: motorInterrupt1 (right) / motorInterrupt2 (left), defined
-  *  in main.c and updated by the EXTI ISR. Since rotate_iterative() no longer
-  *  resets them (time-based pivot — Option A), they act as natural monotonic
-  *  counters; uint16_t wraparound is handled here via signed delta cast.
+  *  in main.c and updated by the EXTI ISR. rotate_iterative() snapshots the
+  *  counter per substep rather than resetting it, so the globals stay
+  *  monotonic for us; uint16_t wraparound is handled here via signed delta
+  *  cast.
   ******************************************************************************
   */
 
@@ -21,10 +22,9 @@
 
 /* ===========================================================================
  *  Calibration — set via CALIB_ODOM before relying on the pose.
- *  Placeholders below are ORDER-OF-MAGNITUDE guesses and WILL be wrong.
  * =========================================================================== */
-#define WHEEL_BASE_CM    15.0f     /* TODO(measure): caliper between wheel contact patches */
-#define TICKS_PER_CM     20.0f     /* TODO(CALIB_ODOM=1): mean(|dR|,|dL|) / measured_cm   */
+#define WHEEL_BASE_CM    22.0f     /* measured caliper between wheel contact patches */
+#define TICKS_PER_CM     50.8f     /* CALIB_ODOM=1 (3 reps, sub-1% variance) */
 
 /* EXTI sign is partner-pin keyed, not forward-direction keyed. CALIB_ODOM=1
  * tells you whether right/left increment in opposite directions on a forward
