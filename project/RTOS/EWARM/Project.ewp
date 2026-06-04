@@ -1042,6 +1042,12 @@
       <file>
         <name>$PROJ_DIR$\..\Src\odom.c</name>
       </file>
+      <file>
+        <name>$PROJ_DIR$\..\Src\ekf.c</name>
+      </file>
+      <file>
+        <name>$PROJ_DIR$\..\Src\map_geom.c</name>
+      </file>
     </group>
   </group>
 </project>

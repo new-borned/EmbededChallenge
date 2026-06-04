@@ -44,4 +44,9 @@ void odom_reset(float x_cm, float y_cm, float theta_rad);   /* force pose withou
  * (straight-line ticks-per-cm measurement). NULL-safe per field. */
 void odom_get_ticks(int32_t *r_ticks, int32_t *l_ticks);
 
+/* Per-tick wheel displacement (cm) from the most recent odom_tick(); EKF
+ * predict step consumes these so it doesn't need to re-derive them from
+ * the encoder accumulators. NULL-safe per field. */
+void odom_get_last_delta_cm(float *ds_R, float *ds_L);
+
 #endif /* __ODOM_H */

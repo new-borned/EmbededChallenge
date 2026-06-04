@@ -19,6 +19,7 @@
 #include <math.h>
 #include "cmsis_os.h"
 #include "odom.h"
+#include "ekf.h"
 
 /* ===========================================================================
  *  Calibration / tunables  (tune everything here)
@@ -296,6 +297,7 @@ void SensorTask(void *arg)
     (void)arg;
     osDelay(TASK_WARMUP_MS);
     odom_init();
+    ekf_init();
     for (;;) {
         us_buf_F[us_idx] = (int)(uwDiffCapture2 / US_TICKS_PER_CM);
         us_buf_L[us_idx] = (int)(uwDiffCapture3 / US_TICKS_PER_CM);
@@ -320,6 +322,14 @@ void SensorTask(void *arg)
         /* Odometry integration runs at the sensor cadence so downstream EKF
          * and occupancy update (added in later phases) share its timing. */
         odom_tick();
+
+        /* EKF predict consumes the same per-tick wheel deltas the odom just
+         * applied; update folds the ultrasonic readings against the wall
+         * list (no-op while n_walls == 0). */
+        float ds_R, ds_L;
+        odom_get_last_delta_cm(&ds_R, &ds_L);
+        ekf_predict(ds_L, ds_R);
+        ekf_update(dF, dL, dR, sF, sL, sR);
 
         osDelay(SENS_PERIOD_MS);
     }
@@ -1102,7 +1112,7 @@ int main(void)
     HAL_ADC_ConfigChannel(&AdcHandle3, &adcConfig3);
 
     /* -------- RTOS tasks (sizes match main_good) -------- */
-    xTaskCreate(SensorTask,  "sensor",   512, NULL, 3, NULL);
+    xTaskCreate(SensorTask,  "sensor",  1024, NULL, 3, NULL);   /* +EKF stack frame */
     xTaskCreate(IR_Task,     "ir",       512, NULL, 3, NULL);
     xTaskCreate(ControlTask, "control", 1024, NULL, 2, NULL);
     xTaskCreate(DebugTask,   "debug",    512, NULL, 1, NULL);

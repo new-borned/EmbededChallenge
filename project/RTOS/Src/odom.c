@@ -31,6 +31,8 @@ static int32_t  L_ticks_total;
 static float    x_cm;
 static float    y_cm;
 static float    theta_rad;
+static float    last_ds_R;       /* per-tick wheel displacement, exposed for EKF */
+static float    last_ds_L;
 
 void odom_init(void)
 {
@@ -41,6 +43,8 @@ void odom_init(void)
     x_cm     = 0.0f;
     y_cm     = 0.0f;
     theta_rad = 0.0f;
+    last_ds_R = 0.0f;
+    last_ds_L = 0.0f;
 }
 
 void odom_tick(void)
@@ -61,6 +65,8 @@ void odom_tick(void)
 
     float ds_R = (float)dR / TICKS_PER_CM;
     float ds_L = (float)dL / TICKS_PER_CM;
+    last_ds_R  = ds_R;
+    last_ds_L  = ds_L;
     float ds   = (ds_R + ds_L) * 0.5f;
     float dth  = (ds_R - ds_L) / WHEEL_BASE_CM;
 
@@ -95,4 +101,10 @@ void odom_get_ticks(int32_t *r_out, int32_t *l_out)
 {
     if (r_out != 0) *r_out = R_ticks_total;
     if (l_out != 0) *l_out = L_ticks_total;
+}
+
+void odom_get_last_delta_cm(float *ds_R_out, float *ds_L_out)
+{
+    if (ds_R_out != 0) *ds_R_out = last_ds_R;
+    if (ds_L_out != 0) *ds_L_out = last_ds_L;
 }
