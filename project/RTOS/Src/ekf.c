@@ -35,8 +35,12 @@
 static float xs[3];          /* state: px_cm, py_cm, theta_rad */
 static float P[3][3];
 
-/* -------- 3x3 matrix helpers (hand-rolled; sizes are fixed) -------- */
-static void mat3_mul(const float A[3][3], const float B[3][3], float C[3][3])
+/* -------- 3x3 matrix helpers (hand-rolled; sizes are fixed) --------
+ * Parameters are non-const because Keil ARMCC refuses to convert
+ * float (*)[3] to const float (*)[3] without an explicit cast (C does
+ * not propagate const through nested pointer types). Helpers don't
+ * mutate A/B in practice; the discipline is by convention. */
+static void mat3_mul(float A[3][3], float B[3][3], float C[3][3])
 {
     for (int i = 0; i < 3; i++) {
         for (int j = 0; j < 3; j++) {
@@ -47,7 +51,7 @@ static void mat3_mul(const float A[3][3], const float B[3][3], float C[3][3])
     }
 }
 
-static void mat3_mul_tr(const float A[3][3], const float B[3][3], float C[3][3])
+static void mat3_mul_tr(float A[3][3], float B[3][3], float C[3][3])
 {
     /* C = A * B^T */
     for (int i = 0; i < 3; i++) {
@@ -59,18 +63,11 @@ static void mat3_mul_tr(const float A[3][3], const float B[3][3], float C[3][3])
     }
 }
 
-static void mat3_add(const float A[3][3], const float B[3][3], float C[3][3])
+static void mat3_add(float A[3][3], float B[3][3], float C[3][3])
 {
     for (int i = 0; i < 3; i++)
         for (int j = 0; j < 3; j++)
             C[i][j] = A[i][j] + B[i][j];
-}
-
-static void mat3_copy(const float A[3][3], float C[3][3])
-{
-    for (int i = 0; i < 3; i++)
-        for (int j = 0; j < 3; j++)
-            C[i][j] = A[i][j];
 }
 
 static void wrap_theta(void)
