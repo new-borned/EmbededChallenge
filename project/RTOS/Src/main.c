@@ -21,6 +21,7 @@
 #include "odom.h"
 #include "ekf.h"
 #include "map_geom.h"
+#include "occgrid.h"
 
 /* ===========================================================================
  *  Calibration / tunables  (tune everything here)
@@ -104,13 +105,11 @@
  * can wave obstacles in front of each sensor to find IR_BUMPER_THRESH. */
 #define CALIB_IR          0
 
-/* Phase-2 EKF wall seed: a single wall segment is pushed into walls[] at
- * boot so the EKF measurement model has something to project against
- * before Phase 3's automatic wall extraction lands. Geometry assumes the
- * robot starts facing +x with a wall directly ahead.
- *   line  { (X, -HALF_W) -> (X, +HALF_W) } in cm, world frame. */
-#define EKF_SEED_WALL_X_CM      30.0f
-#define EKF_SEED_WALL_HALF_W    50.0f
+/* Period between occgrid wall extractions, in SensorTask ticks. With
+ * SENS_PERIOD_MS=20 and 250 ticks, that's a 5 s cadence — frequent
+ * enough that EKF picks up new walls quickly, infrequent enough that
+ * a noisy single tick doesn't define the world. */
+#define WALLS_EXTRACT_PERIOD_TICKS  250
 
 /* Odometry calibration:
  *   1 = straight-line: drive V_CRUISE for 3 s, three reps; print enc deltas
@@ -307,8 +306,11 @@ void SensorTask(void *arg)
     osDelay(TASK_WARMUP_MS);
     odom_init();
     ekf_init();
-    walls_add(EKF_SEED_WALL_X_CM, -EKF_SEED_WALL_HALF_W,
-              EKF_SEED_WALL_X_CM,  EKF_SEED_WALL_HALF_W);
+    occ_init();
+    /* walls[] starts empty; the periodic walls_extract_from_grid() call
+     * below populates it once the occupancy grid has accumulated enough
+     * evidence (~5 s of driving). Until then EKF runs predict-only. */
+    uint32_t sens_tick = 0;
     for (;;) {
         us_buf_F[us_idx] = (int)(uwDiffCapture2 / US_TICKS_PER_CM);
         us_buf_L[us_idx] = (int)(uwDiffCapture3 / US_TICKS_PER_CM);
@@ -341,6 +343,21 @@ void SensorTask(void *arg)
         odom_get_last_delta_cm(&ds_R, &ds_L);
         ekf_predict(ds_L, ds_R);
         ekf_update(dF, dL, dR, sF, sL, sR);
+
+        /* Occupancy grid update uses the post-fusion pose so each ray
+         * lands in the best-estimate world cell. */
+        float ex, ey, eth;
+        ekf_get(&ex, &ey, &eth);
+        occ_update(ex, ey, eth, dF, dL, dR, sF, sL, sR);
+
+        /* Periodically re-extract walls[] from the grid so EKF starts
+         * getting real measurement targets (chicken-and-egg: the first
+         * cycle's grid is built off odom-only pose; subsequent cycles
+         * benefit from the prior cycle's EKF corrections). */
+        sens_tick++;
+        if ((sens_tick % WALLS_EXTRACT_PERIOD_TICKS) == 0) {
+            walls_extract_from_grid();
+        }
 
         osDelay(SENS_PERIOD_MS);
     }
