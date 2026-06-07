@@ -20,6 +20,7 @@
 #include "cmsis_os.h"
 #include "odom.h"
 #include "ekf.h"
+#include "map_geom.h"
 
 /* ===========================================================================
  *  Calibration / tunables  (tune everything here)
@@ -102,6 +103,14 @@
  * stopped, and IR readings stream to UART at 100ms cadence so a human
  * can wave obstacles in front of each sensor to find IR_BUMPER_THRESH. */
 #define CALIB_IR          0
+
+/* Phase-2 EKF wall seed: a single wall segment is pushed into walls[] at
+ * boot so the EKF measurement model has something to project against
+ * before Phase 3's automatic wall extraction lands. Geometry assumes the
+ * robot starts facing +x with a wall directly ahead.
+ *   line  { (X, -HALF_W) -> (X, +HALF_W) } in cm, world frame. */
+#define EKF_SEED_WALL_X_CM      30.0f
+#define EKF_SEED_WALL_HALF_W    50.0f
 
 /* Odometry calibration:
  *   1 = straight-line: drive V_CRUISE for 3 s, three reps; print enc deltas
@@ -298,6 +307,8 @@ void SensorTask(void *arg)
     osDelay(TASK_WARMUP_MS);
     odom_init();
     ekf_init();
+    walls_add(EKF_SEED_WALL_X_CM, -EKF_SEED_WALL_HALF_W,
+              EKF_SEED_WALL_X_CM,  EKF_SEED_WALL_HALF_W);
     for (;;) {
         us_buf_F[us_idx] = (int)(uwDiffCapture2 / US_TICKS_PER_CM);
         us_buf_L[us_idx] = (int)(uwDiffCapture3 / US_TICKS_PER_CM);
