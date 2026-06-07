@@ -362,7 +362,6 @@ void IR_Task(void *arg)
         ir_floor = (int)HAL_ADC_GetValue(&AdcHandle3);
 
         osDelay(IR_PERIOD_MS);
-        printf("\r\n[IR_Bumping]Left : %d, Right : %d", ir_left, ir_right);
     }
 }
 
@@ -450,12 +449,21 @@ void DebugTask(void *arg)
 
         /* --- Periodic snapshot (throttled to DBG_PRINT_DIVIDER ticks) - */
         if ((tick % DBG_PRINT_DIVIDER) == 0) {
+            float ox, oy, oth, ex, ey, eth;
+            odom_get(&ox, &oy, &oth);
+            ekf_get(&ex, &ey, &eth);
+            /* With n_walls == 0 the EKF is predict-only so odom and ekf
+             * print identical — that's the sanity baseline. Phase 3 wall
+             * extraction is what makes the two diverge. */
             printf("\r\n[DBG #%lu] st=%s side=%s "
+                   "odom=(%d,%d,%d) ekf=(%d,%d,%d) "
                    "d(F/L/R)=%d/%d/%d s(F/L/R)=%d/%d/%d "
                    "emg=%c commit=%c hist=%d ir(L/R/F)=%d/%d/%d",
                    (unsigned long)tick,
                    state_name[state],
                    side == TRACK_RIGHT ? "R" : "L",
+                   (int)ox, (int)oy, (int)(oth * 57.2957795f),
+                   (int)ex, (int)ey, (int)(eth * 57.2957795f),
                    dF, dL, dR,
                    sF, sL, sR,
                    isEmergency() ? '1' : '0',
