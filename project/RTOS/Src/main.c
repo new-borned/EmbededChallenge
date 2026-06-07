@@ -36,6 +36,7 @@
 #define IR_PERIOD_MS      20
 #define DBG_PERIOD_MS     100       /* DebugTask tick — LED refresh rate */
 #define DBG_PRINT_DIVIDER 5         /* printf snapshot every N ticks (500ms) */
+#define DBG_OCC_DUMP_TICKS 300      /* occ_dump_ascii_uart() every N ticks (30 s) */
 #define TASK_WARMUP_MS    200
 #define CTRL_WARMUP_MS    300
 
@@ -498,6 +499,14 @@ void DebugTask(void *arg)
                    emerg_committed ? (emerg_turn_left ? 'L' : 'R') : '-',
                    hist_count,
                    ir_left, ir_right, ir_floor);
+        }
+
+        /* Occupancy grid ASCII dump on a slow cadence — heavy printf
+         * (~1300 chars) but DebugTask is lowest priority so the time
+         * cost doesn't ripple. Skipping tick 0 avoids a useless empty
+         * dump at boot before any rays have been cast. */
+        if (tick > 0 && (tick % DBG_OCC_DUMP_TICKS) == 0) {
+            occ_dump_ascii_uart();
         }
 
         tick++;
