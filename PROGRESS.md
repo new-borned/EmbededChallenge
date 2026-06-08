@@ -289,8 +289,7 @@ $$
 
 ### 월드 → 셀 변환
 
-$$
-c_x = \lfloor x_{\text{cm}} / \text{CELL\_CM} \rfloor + \text{START\_CX}, \quad
+$$c_x = \lfloor x_{\text{cm}} / \text{CELL\_CM} \rfloor + \text{START\_CX}, \quad
 c_y = \lfloor y_{\text{cm}} / \text{CELL\_CM} \rfloor + \text{START\_CY}
 $$
 
