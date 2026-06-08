@@ -44,7 +44,7 @@
 #define D_TARGET          8        /* wall-follow target distance */
 #define D_MIN             4        /* lower safety bound          */
 #define D_OPEN            150      /* > D_OPEN => "no wall on this side" */
-#define EMG_FRONT         8        /* emergency front threshold (cm) */
+#define EMG_FRONT         10       /* emergency front threshold (cm) */
 #define EMG_FRONT_HYST    2        /* +cm margin to clear EMERGENCY */
 #define IR_BUMPER_THRESH  2100     /* raw ADC; ir_left/right ABOVE this => bumper triggered. */
 #define EMERG_IR_DEG      30       /* rotation angle when IR bumper triggers EMERGENCY */
@@ -185,6 +185,20 @@ int ir_floor = 0, ir_left = 0, ir_right = 0;
 
 DriveState   state = INIT;
 TrackingSide side  = TRACK_RIGHT;
+
+/* Discrete cardinal heading, updated on every committed 90° pivot
+ * (CORNER and EMERGENCY-US). Boot orientation is taken as NORTH; the
+ * EMERGENCY front-blocked branch uses this to bias its pivot direction
+ * toward whichever of the two 90° outcomes lands closer to NORTH. Small
+ * pivots (VEER 10°, EMERGENCY IR 30°) intentionally do NOT update this
+ * because they aren't cardinal-aligned; the model accepts that drift. */
+typedef enum {
+    HEAD_N = 0,
+    HEAD_E = 1,
+    HEAD_S = 2,
+    HEAD_W = 3
+} CardHead;
+static CardHead heading = HEAD_N;
 
 /* EMERGENCY commit state: lock turn direction until SEEK is stable for a while */
 static bool emerg_committed = false;
@@ -496,13 +510,15 @@ void DebugTask(void *arg)
             /* With n_walls == 0 the EKF is predict-only so odom and ekf
              * print identical — that's the sanity baseline. Phase 3 wall
              * extraction is what makes the two diverge. */
-            printf("\r\n[DBG #%lu] st=%s side=%s "
+            static const char head_ch[4] = { 'N', 'E', 'S', 'W' };
+            printf("\r\n[DBG #%lu] st=%s side=%s head=%c "
                    "odom=(%d,%d,%d) ekf=(%d,%d,%d) "
                    "d(F/L/R)=%d/%d/%d s(F/L/R)=%d/%d/%d "
                    "emg=%c commit=%c hist=%d ir(L/R/F)=%d/%d/%d",
                    (unsigned long)tick,
                    state_name[state],
                    side == TRACK_RIGHT ? "R" : "L",
+                   head_ch[heading],
                    (int)ox, (int)oy, (int)(oth * 57.2957795f),
                    (int)ex, (int)ey, (int)(eth * 57.2957795f),
                    dF, dL, dR,
@@ -733,6 +749,35 @@ uint8_t canProgressDirection(void)
 }
 
 /**
+ * @brief  Advances the cardinal-heading model by one 90° pivot.
+ * @param  left  Caller-convention left (matches rotate_iterative arg).
+ * @note   90° CCW (left)  : N -> W -> S -> E -> N.
+ *         90° CW  (right) : N -> E -> S -> W -> N.
+ */
+static void heading_apply_turn(bool left)
+{
+    if (left) heading = (CardHead)((heading + 3u) % 4u);
+    else      heading = (CardHead)((heading + 1u) % 4u);
+}
+
+/**
+ * @brief  Returns true if a left 90° pivot would orient closer to N than
+ *         a right 90° pivot, given the current cardinal heading.
+ * @note   Score: N=0 (best), E or W=1, S=2 (worst). Tie -> left, matching
+ *         the EMERGENCY left-preference default.
+ *         Use case: front-blocked EMERGENCY picks turn direction so the
+ *         post-pivot heading is as N-ward as physical clearance allows.
+ */
+static bool prefer_left_for_north(void)
+{
+    CardHead after_left  = (CardHead)((heading + 3u) % 4u);
+    CardHead after_right = (CardHead)((heading + 1u) % 4u);
+    int score_left  = (after_left  == HEAD_N) ? 0 : (after_left  == HEAD_S) ? 2 : 1;
+    int score_right = (after_right == HEAD_N) ? 0 : (after_right == HEAD_S) ? 2 : 1;
+    return score_left <= score_right;
+}
+
+/**
  * @brief  True when a forward obstacle is close enough to require evasion.
  * @return dF in (0, EMG_FRONT] OR a side IR bumper reads above IR_BUMPER_THRESH
  *         (direct sensor: higher ADC = closer).
@@ -914,6 +959,7 @@ void ControlTask(void *arg)
                         Motor_Stop();
                         osDelay(50);
                         rotate_iterative(CORNER_TURN_DEG, turn_left);
+                        if (CORNER_TURN_DEG == 90) heading_apply_turn(turn_left);
                         Motor_Drive(V_CRUISE + V_TRIM_L, V_CRUISE);
                         osDelay(CORNER_ESCAPE_MS);
                         corner_cooldown_ticks = CORNER_COOLDOWN_TICKS;
@@ -985,14 +1031,18 @@ void ControlTask(void *arg)
 
                     if (front_emerg) {
                         emerg_turn_deg = EMERG_US_DEG;
-                        /* Left preference: dL == 0 (no echo / open) or dL > EMG_FRONT
-                         * (far enough) means left is clear -> turn LEFT. Only fall to
-                         * right when left is actively blocked but right has room.   */
+                        /* Pick the 90° turn that (a) has physical clearance on
+                         * that side, and (b) orients closer to NORTH per the
+                         * cardinal heading model. Clearance has priority — we
+                         * never pivot into a wall just to face N. */
                         bool left_clear  = (dL == 0) || (dL > EMG_FRONT);
                         bool right_clear = (dR == 0) || (dR > EMG_FRONT);
-                        if (left_clear)        emerg_turn_left = true;
-                        else if (right_clear)  emerg_turn_left = false;
-                        else                   emerg_turn_left = true;   /* both walled, try left */
+                        bool want_left   = prefer_left_for_north();
+                        if (want_left && left_clear)         emerg_turn_left = true;
+                        else if (!want_left && right_clear)  emerg_turn_left = false;
+                        else if (left_clear)                 emerg_turn_left = true;   /* preferred blocked, fallback */
+                        else if (right_clear)                emerg_turn_left = false;
+                        else                                 emerg_turn_left = true;   /* both walled, try left */
                     } else if (ir_l_hit || ir_r_hit) {
                         emerg_turn_deg = EMERG_IR_DEG;
                         if (ir_l_hit && ir_r_hit) emerg_turn_left = (ir_right > ir_left);  /* away from higher (closer) */
@@ -1008,6 +1058,9 @@ void ControlTask(void *arg)
                 Motor_Stop();
                 osDelay(50);
                 rotate_iterative(emerg_turn_deg, emerg_turn_left);
+                /* Only US-triggered (90°) pivots update the cardinal model —
+                 * the 30° IR nudge isn't a clean quarter turn. */
+                if (emerg_turn_deg == EMERG_US_DEG) heading_apply_turn(emerg_turn_left);
                 /* IR-triggered EMERGENCY uses a small rotation (30°) that often
                  * leaves the robot still inside the trigger zone; add a brief
                  * forward escape to break the loop. US (90°) doesn't need it. */
