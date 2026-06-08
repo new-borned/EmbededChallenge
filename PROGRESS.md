@@ -302,13 +302,20 @@ $$
 매 SensorTask tick, 각 초음파에 대해:
 
 1. EKF post-fusion pose로 빔 원점·방향 계산
-2. 종점·범위:
+2. 측정값을 hit / no-hit로 분류한 뒤 범위 결정:
 
 $$
-\mathbf{e}_i = \mathbf{o}_i + r \, \hat{\mathbf{b}}_i, \qquad
-r = \min(z_{\text{meas}}, R_{\max}), \qquad
 \text{hit} \iff 0 < z_{\text{meas}} < R_{\max}
 $$
+
+$$
+r = \begin{cases}
+z_{\text{meas}} & \text{if hit} \\
+R_{\max} & \text{otherwise (no echo, out of range, invalid)}
+\end{cases}
+$$
+
+종점 좌표: $\mathbf{e}_i = \mathbf{o}_i + r \, \hat{\mathbf{b}}_i$. **경계는 hit 아님** — 정확히 $z = R_{\max}$인 경우 노이즈 가능성 차단을 위해 free-only로 처리.
 
 3. Bresenham 알고리즘으로 원점 셀 → 종점 셀 라인 따라가며:
    - 중간 셀: $\ell \leftarrow \ell - 2$ (saturating)
