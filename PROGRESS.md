@@ -301,8 +301,8 @@ $$
 1. EKF post-fusion pose로 빔 원점·방향 계산
 2. 종점 $\mathbf{e}_i = \mathbf{o}_i + r \, \hat{\mathbf{b}}_i$, $r = \min(z_{\text{meas}}, R_{\max})$, hit $= (0 < z_{\text{meas}} < R_{\max})$
 3. Bresenham 알고리즘으로 원점 셀 → 종점 셀 라인 따라가며:
-   - 중간 셀: $\ell \mathrel{+}= -2$ (saturating)
-   - 종점 셀: hit이면 $\ell \mathrel{+}= +4$, 아니면 $\ell \mathrel{+}= -2$
+   - 중간 셀: $\ell \leftarrow \ell - 2$ (saturating)
+   - 종점 셀: hit이면 $\ell \leftarrow \ell + 4$, 아니면 $\ell \leftarrow \ell - 2$
 
 신뢰도 게이팅: $\sigma_i > 3$ cm이면 그 센서 update skip.
 
@@ -387,7 +387,7 @@ EMERGENCY 90° pivot 후 odom $\theta$가 1°밖에 안 적분되고 $y$는 +4cm
 | `main.c` | `D_TARGET`, `EMG_FRONT` | 8 cm | wall-following 임계 |
 | `main.c` | `V_CRUISE`, `V_TRIM_L`, `V_TURN` | 16k, 1k, 20k | PWM duty |
 | `ekf.h` | `US_F/L/R_DX/DY/PHI` | placeholder | 센서 마운트 (TODO 실측) |
-| `ekf.h` | `EKF_INNOV_GATE` | `3.0` | $|y| > N\sqrt{S}$ Mahalanobis |
+| `ekf.h` | `EKF_INNOV_GATE` | `3.0` | $\lvert y \rvert > N\sqrt{S}$ Mahalanobis |
 | `occgrid.h` | `MAP_W_CM`, `MAP_H_CM` | 500, 1000 | 월드 크기 |
 | `occgrid.h` | `CELL_CM` | 20 | 격자 해상도 |
 | `occgrid.h` | `START_FRAC_X`, `_Y` | 1/2, 1/10 | 시작 셀 위치 |
