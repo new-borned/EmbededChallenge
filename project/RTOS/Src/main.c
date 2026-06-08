@@ -96,6 +96,18 @@
 #define ESCAPE_FORWARD_MS_IR   500
 #define VEER_COOLDOWN_TICKS    50   /* 50 * CTRL_PERIOD_MS = 1s lockout after each VEER */
 
+/* Corner-turn (fixed-side wall follower): when the tracked-side ultrasonic
+ * jumps from a tracking value (<= D_TARGET) to a much larger one in a single
+ * tick, the wall just ended at a corridor opening on that side. Pivot 90°
+ * INTO that opening so the wall stays on the tracked side. CORNER_RATE_CM
+ * is the minimum increase between consecutive samples to qualify as a real
+ * corner (rather than a transient miss); CORNER_COOLDOWN_TICKS prevents
+ * re-firing while still mid-escape. */
+#define CORNER_RATE_CM         15   /* dR - dR_prev (or 0/D_OPEN) to flag corner */
+#define CORNER_TURN_DEG        90   /* pivot magnitude toward the opening */
+#define CORNER_COOLDOWN_TICKS  50   /* 1s lockout after a corner pivot */
+#define CORNER_ESCAPE_MS       700  /* forward drive after corner so we settle into the new wall */
+
 /* Pivot calibration mode — when 1, ControlTask skips the FSM and runs a
  * 4x90° round-trip (right then left) so PIVOT_SUBSTEPS_90 can be measured
  * against floor markings. Set to 0 for normal driving. */
@@ -180,6 +192,7 @@ static bool emerg_turn_left = false;
 static int  emerg_turn_deg  = EMERG_US_DEG;   /* committed rotation magnitude */
 static int  seek_clear_ticks = 0;
 static int  veer_cooldown_ticks = 0;   /* ALIGN_PROGRESS VEER lockout counter */
+static int  corner_cooldown_ticks = 0; /* ALIGN_PROGRESS corner-turn lockout counter */
 #define EMERG_RELEASE_TICKS  25     /* ~500ms of clear SEEK -> release commit */
 
 /* VEER LED display — DebugTask shows LED1 (R wall close) / LED4 (L wall close)
@@ -307,7 +320,7 @@ void SensorTask(void *arg)
     osDelay(TASK_WARMUP_MS);
     odom_init();
     ekf_init();
-    occ_init();
+    /* occ_init(); */                 /* grid disabled — see SensorTask loop */
     /* walls[] starts empty; the periodic walls_extract_from_grid() call
      * below populates it once the occupancy grid has accumulated enough
      * evidence (~5 s of driving). Until then EKF runs predict-only. */
@@ -345,20 +358,19 @@ void SensorTask(void *arg)
         ekf_predict(ds_L, ds_R);
         ekf_update(dF, dL, dR, sF, sL, sR);
 
-        /* Occupancy grid update uses the post-fusion pose so each ray
-         * lands in the best-estimate world cell. */
+        /* Occupancy grid + automatic wall extraction disabled for now —
+         * focusing on Phase 2 EKF + the corner-turn behavior. Re-enable
+         * by uncommenting after grid behavior is validated. */
+        /*
         float ex, ey, eth;
         ekf_get(&ex, &ey, &eth);
         occ_update(ex, ey, eth, dF, dL, dR, sF, sL, sR);
-
-        /* Periodically re-extract walls[] from the grid so EKF starts
-         * getting real measurement targets (chicken-and-egg: the first
-         * cycle's grid is built off odom-only pose; subsequent cycles
-         * benefit from the prior cycle's EKF corrections). */
         sens_tick++;
         if ((sens_tick % WALLS_EXTRACT_PERIOD_TICKS) == 0) {
             walls_extract_from_grid();
         }
+        */
+        (void)sens_tick;   /* silence unused-warning while grid block is off */
 
         osDelay(SENS_PERIOD_MS);
     }
@@ -501,13 +513,12 @@ void DebugTask(void *arg)
                    ir_left, ir_right, ir_floor);
         }
 
-        /* Occupancy grid ASCII dump on a slow cadence — heavy printf
-         * (~1300 chars) but DebugTask is lowest priority so the time
-         * cost doesn't ripple. Skipping tick 0 avoids a useless empty
-         * dump at boot before any rays have been cast. */
+        /* Grid ASCII dump disabled while occgrid is commented out. */
+        /*
         if (tick > 0 && (tick % DBG_OCC_DUMP_TICKS) == 0) {
             occ_dump_ascii_uart();
         }
+        */
 
         tick++;
         osDelay(DBG_PERIOD_MS);
@@ -618,31 +629,17 @@ void rotate_iterative(int degrees, bool left)
 
 /**
  * @brief  Sticky dynamic wall tracking — only swaps `side` when current is lost.
- * @return true if a usable tracked wall is in place after the call,
- *         false if both sides lack a wall within D_TARGET.
- * @note   Sticky policy: a working track is never preempted. If the current
- *         side fails but the opposite side has a wall, `side` flips and the
- *         angle history is flushed (the heading-relative correlation we were
- *         tracking is now against a different wall).
+ * @return true if the fixed tracked side currently has a wall within D_TARGET.
+ * @note   Dynamic side-swap removed: the robot commits to one wall and
+ *         follows it. When the tracked side loses its wall the FSM either
+ *         (a) detects a corner via the rate-jump heuristic in ALIGN_PROGRESS
+ *         and pivots toward the now-open side, or (b) demotes to
+ *         NON_ALIGN_PROGRESS until the same wall reappears.
  */
 bool switchTracking(void)
 {
-    bool cur_ok, alt_ok;
-    if (side == TRACK_RIGHT) {
-        cur_ok = (dR > 0 && dR <= D_TARGET);
-        alt_ok = (dL > 0 && dL <= D_TARGET);
-    } else {
-        cur_ok = (dL > 0 && dL <= D_TARGET);
-        alt_ok = (dR > 0 && dR <= D_TARGET);
-    }
-
-    if (cur_ok) return true;
-    if (alt_ok) {
-        side = (side == TRACK_RIGHT) ? TRACK_LEFT : TRACK_RIGHT;
-        angleHistoryFlush();
-        return true;
-    }
-    return false;
+    if (side == TRACK_RIGHT) return (dR > 0 && dR <= D_TARGET);
+    else                     return (dL > 0 && dL <= D_TARGET);
 }
 
 /* Source sensor of the most recent non-zero angleCalculate() result.
@@ -895,8 +892,36 @@ void ControlTask(void *arg)
             } break;
 
             case ALIGN_PROGRESS: {
-                /* Sticky tracking: only swaps if current side is lost.
-                 * Returns false -> no usable wall on either side -> demote. */
+                /* Corner-turn check (runs BEFORE the tracked-wall demotion):
+                 * if the tracked side had a wall last tick and the reading
+                 * just jumped open (rate increase or 0 echo), we hit a
+                 * corridor opening on that side -- pivot 90° into it so the
+                 * wall stays on the tracked side. */
+                if (corner_cooldown_ticks > 0) corner_cooldown_ticks--;
+                {
+                    bool had_wall, lost_with_jump;
+                    if (side == TRACK_RIGHT) {
+                        had_wall = (dR_prev > 0 && dR_prev <= D_TARGET);
+                        lost_with_jump = (dR == 0) || (dR > D_TARGET && dR - dR_prev >= CORNER_RATE_CM);
+                    } else {
+                        had_wall = (dL_prev > 0 && dL_prev <= D_TARGET);
+                        lost_with_jump = (dL == 0) || (dL > D_TARGET && dL - dL_prev >= CORNER_RATE_CM);
+                    }
+                    if (corner_cooldown_ticks == 0 && had_wall && lost_with_jump) {
+                        bool turn_left = (side == TRACK_LEFT);   /* pivot INTO the open side */
+                        printf("\r\n>> CORNER %s dR=%d->%d dL=%d->%d",
+                               turn_left ? "L" : "R", dR_prev, dR, dL_prev, dL);
+                        Motor_Stop();
+                        osDelay(50);
+                        rotate_iterative(CORNER_TURN_DEG, turn_left);
+                        Motor_Drive(V_CRUISE + V_TRIM_L, V_CRUISE);
+                        osDelay(CORNER_ESCAPE_MS);
+                        corner_cooldown_ticks = CORNER_COOLDOWN_TICKS;
+                        break;   /* this tick fully consumed; next tick re-evaluates */
+                    }
+                }
+
+                /* Fixed-side tracking: tracked wall lost -> demote. */
                 if (!switchTracking()) {
                     state = NON_ALIGN_PROGRESS;
                     break;
