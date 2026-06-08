@@ -289,8 +289,11 @@ $$
 
 ### 월드 → 셀 변환
 
-$$c_x = \lfloor x_{\text{cm}} / \text{CELL\_CM} \rfloor + \text{START\_CX}, \quad
-c_y = \lfloor y_{\text{cm}} / \text{CELL\_CM} \rfloor + \text{START\_CY}
+$\delta$ = `CELL_CM`, $(s_x, s_y)$ = `(START_CX, START_CY)`라 두면:
+
+$$
+c_x = \lfloor x / \delta \rfloor + s_x, \qquad
+c_y = \lfloor y / \delta \rfloor + s_y
 $$
 
 격자 밖은 silently reject (격자 손상 방지).
@@ -299,7 +302,14 @@ $$
 매 SensorTask tick, 각 초음파에 대해:
 
 1. EKF post-fusion pose로 빔 원점·방향 계산
-2. 종점 $\mathbf{e}_i = \mathbf{o}_i + r \, \hat{\mathbf{b}}_i$, $r = \min(z_{\text{meas}}, R_{\max})$, hit $= (0 < z_{\text{meas}} < R_{\max})$
+2. 종점·범위:
+
+$$
+\mathbf{e}_i = \mathbf{o}_i + r \, \hat{\mathbf{b}}_i, \qquad
+r = \min(z_{\text{meas}}, R_{\max}), \qquad
+\text{hit} \iff 0 < z_{\text{meas}} < R_{\max}
+$$
+
 3. Bresenham 알고리즘으로 원점 셀 → 종점 셀 라인 따라가며:
    - 중간 셀: $\ell \leftarrow \ell - 2$ (saturating)
    - 종점 셀: hit이면 $\ell \leftarrow \ell + 4$, 아니면 $\ell \leftarrow \ell - 2$
@@ -314,10 +324,10 @@ $$
 1. `walls[]` clear
 2. 각 row $y$ 스캔: 같은 행에 $\ell \geq L_{\text{occ}}$인 셀이 $\geq 3$ 연속이면 그 구간을 가로 wall segment로 push
 3. 각 column $x$ 스캔: 같은 열에 동일 조건이면 세로 wall segment로 push
-4. 셀 중심 좌표를 cm으로 변환:
+4. 셀 중심 좌표를 cm으로 변환 ($s_x$ = `START_CX`, $\delta$ = `CELL_CM`):
 
 $$
-x_{\text{world}}(c) = (c - \text{START\_CX} + 0.5) \cdot \text{CELL\_CM}
+x_{\text{world}}(c) = (c - s_x + 0.5) \cdot \delta
 $$
 
 이렇게 추출된 walls가 EKF measurement update의 ray-cast 타겟이 됨 — 자동 chicken-and-egg 해소.
