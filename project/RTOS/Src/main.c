@@ -52,8 +52,8 @@
 
 /* Motor PWM */
 #define PWM_PERIOD          20000
-#define V_CRUISE            16000   /* duty for all forward drive (SEEK / ALIGN / NON_ALIGN) */
-#define V_TRIM_L            1000    /* extra duty on LEFT wheel for straight-line drift trim
+#define V_CRUISE            17000   /* duty for all forward drive (SEEK / ALIGN / NON_ALIGN) */
+#define V_TRIM_L            500     /* extra duty on LEFT wheel for straight-line drift trim
                                      * (motors/wheels asymmetric -- same duty != same speed). */
 #define V_TURN              20000   /* full duty for max pivot torque */
 
@@ -971,7 +971,9 @@ void ControlTask(void *arg)
             case EMERGENCY: {
                 /* Front-blocked (ultrasonic) ALWAYS takes priority over IR --
                  * a wall ahead needs a full 90° pivot even if a side IR also
-                 * trips. US branch picks the wider side via canProgressDirection().
+                 * trips. US branch uses a LEFT-preference policy on the side
+                 * sensors: turn left unless the left side is actively blocked
+                 * (dL within EMG_FRONT), in which case fall back to right.
                  * IR branch is a 45° nudge away from the tripped bumper.
                  *
                  * Commit on first entry; reuse until SEEK clears. */
@@ -983,7 +985,14 @@ void ControlTask(void *arg)
 
                     if (front_emerg) {
                         emerg_turn_deg = EMERG_US_DEG;
-                        emerg_turn_left = (canProgressDirection() == DIR_LEFT);
+                        /* Left preference: dL == 0 (no echo / open) or dL > EMG_FRONT
+                         * (far enough) means left is clear -> turn LEFT. Only fall to
+                         * right when left is actively blocked but right has room.   */
+                        bool left_clear  = (dL == 0) || (dL > EMG_FRONT);
+                        bool right_clear = (dR == 0) || (dR > EMG_FRONT);
+                        if (left_clear)        emerg_turn_left = true;
+                        else if (right_clear)  emerg_turn_left = false;
+                        else                   emerg_turn_left = true;   /* both walled, try left */
                     } else if (ir_l_hit || ir_r_hit) {
                         emerg_turn_deg = EMERG_IR_DEG;
                         if (ir_l_hit && ir_r_hit) emerg_turn_left = (ir_right > ir_left);  /* away from higher (closer) */
