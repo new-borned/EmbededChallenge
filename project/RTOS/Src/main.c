@@ -729,6 +729,9 @@ void ControlTask(void *arg)
                         osDelay(CORNER_ESCAPE_MS);
                     }
                     corner_cooldown_ticks = CORNER_COOLDOWN_TICKS;
+                    /* Flush stale prev-values so the next tick doesn't see a
+                     * spurious rate-jump from pre-rotation readings. */
+                    dR_prev = dR; dL_prev = dL;
                     break;
                 }
 
@@ -742,6 +745,7 @@ void ControlTask(void *arg)
                     Motor_Drive(V_CRUISE + V_TRIM_L, V_CRUISE);
                     osDelay(ESCAPE_FORWARD_MS_VEER);
                     veer_cooldown_ticks = VEER_COOLDOWN_TICKS;
+                    dR_prev = dR; dL_prev = dL;
                 } else if (veer_cooldown_ticks == 0 && dL > 0 && dL < D_MIN) {
                     printf("\r\n>> VEER R deg=%d dL=%d", ROTATE_VEER_DEG, dL);
                     veer_show_left = true;
@@ -751,6 +755,7 @@ void ControlTask(void *arg)
                     Motor_Drive(V_CRUISE + V_TRIM_L, V_CRUISE);
                     osDelay(ESCAPE_FORWARD_MS_VEER);
                     veer_cooldown_ticks = VEER_COOLDOWN_TICKS;
+                    dR_prev = dR; dL_prev = dL;
                 } else {
                     Motor_Drive(V_CRUISE + V_TRIM_L, V_CRUISE);
                 }
@@ -798,6 +803,7 @@ void ControlTask(void *arg)
                     Motor_Drive(V_CRUISE + V_TRIM_L, V_CRUISE);
                     osDelay(ESCAPE_FORWARD_MS_IR);
                 }
+                dR_prev = dR; dL_prev = dL;   /* flush stale delta after rotation */
                 state = DRIVE;
             } break;
         }
