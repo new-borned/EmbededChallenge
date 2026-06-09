@@ -7,9 +7,13 @@ STM32F429 (STM324x9I-EVAL) 기반 벽 추종 로봇에 EKF localization, occupan
 | 단계 | 모듈 | 상태 |
 |---|---|---|
 | Phase 1 | Wheel Odometry | 통합 완료 (캘리브레이션 1회 통과) |
-| Phase 2 | EKF Localization | 통합 완료 (1개 벽 시드로 smoke test 통과) |
-| Phase 3 | Occupancy Grid + Wall Extraction | 통합 완료 (실주행 검증 대기) |
-| Phase 4 | A* 경로 계획 | **미시작** |
+| Phase 2 | EKF Localization | 통합 완료 (predict-only — walls[] 비어있음) |
+| Phase 3 | Occupancy Grid + Wall Extraction | **폐기** (격자/벽 추출 아이디어 자체 드롭) |
+| Phase 4 | A* 경로 계획 | **폐기** (cardinal heading + corner-turn 정책으로 대체) |
+
+대신 ControlTask FSM에:
+- 고정 추적측 (`TRACK_RIGHT`) + 코너 감지 회전 (rate-jump 기반)
+- 4-cardinal heading 모델 (N/E/S/W) + 전면 EMERGENCY 시 N-선호 회전
 
 ---
 
@@ -256,7 +260,10 @@ floor 없으면 깨끗한 측정에서 $\sigma = 0$ → $\mathbf{R}$ singular.
 
 ---
 
-## Phase 3 — Occupancy Grid + Wall Extraction
+## Phase 3 — Occupancy Grid + Wall Extraction  *(폐기)*
+
+> 격자 매핑 + 벽 자동 추출 아이디어를 드롭. 빌드에서 occgrid.c/h 제거됨. EKF는 walls[]가 비어있어 predict-only로 동작. 대신 fixed-side wall following + corner-turn + cardinal heading 정책으로 navigation 처리. 아래 수식·자료구조는 design 기록 차원에서 보존.
+
 
 ### 격자 구조
 크기·해상도·시작 셀이 모두 5개 매크로에서 자동 도출:
@@ -412,7 +419,11 @@ EMERGENCY 90° pivot 후 odom $\theta$가 1°밖에 안 적분되고 $y$는 +4cm
 
 ---
 
-## Phase 4 — A* (미구현, 계획 단계)
+## Phase 4 — A*  *(폐기)*
+
+> Phase 3 격자가 없어진 시점에서 격자 위에서 동작하는 A*도 자연 폐기. 아래 sketch는 design 기록.
+
+### (참고) 원래 sketch
 
 격자 위에서 8-connected 경로 계획. MISRA-C 친화:
 - malloc 금지: open list (binary heap), closed set (bitset), g-score, came_from 모두 BSS 고정 배열

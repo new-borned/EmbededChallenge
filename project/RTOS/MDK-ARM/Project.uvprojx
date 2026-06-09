@@ -560,11 +560,6 @@
               <FileType>1</FileType>
               <FilePath>..\Src\map_geom.c</FilePath>
             </File>
-            <File>
-              <FileName>occgrid.c</FileName>
-              <FileType>1</FileType>
-              <FilePath>..\Src\occgrid.c</FilePath>
-            </File>
           </Files>
         </Group>
         <Group>

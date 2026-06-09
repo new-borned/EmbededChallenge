@@ -1048,9 +1048,6 @@
       <file>
         <name>$PROJ_DIR$\..\Src\map_geom.c</name>
       </file>
-      <file>
-        <name>$PROJ_DIR$\..\Src\occgrid.c</name>
-      </file>
     </group>
   </group>
 </project>

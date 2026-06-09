@@ -21,7 +21,6 @@
 #include "odom.h"
 #include "ekf.h"
 #include "map_geom.h"
-#include "occgrid.h"
 
 /* ===========================================================================
  *  Calibration / tunables  (tune everything here)
@@ -36,7 +35,6 @@
 #define IR_PERIOD_MS      20
 #define DBG_PERIOD_MS     100       /* DebugTask tick — LED refresh rate */
 #define DBG_PRINT_DIVIDER 5         /* printf snapshot every N ticks (500ms) */
-#define DBG_OCC_DUMP_TICKS 300      /* occ_dump_ascii_uart() every N ticks (30 s) */
 #define TASK_WARMUP_MS    200
 #define CTRL_WARMUP_MS    300
 
@@ -44,7 +42,7 @@
 #define D_TARGET          8        /* wall-follow target distance */
 #define D_MIN             4        /* lower safety bound          */
 #define D_OPEN            150      /* > D_OPEN => "no wall on this side" */
-#define EMG_FRONT         10       /* emergency front threshold (cm) */
+#define EMG_FRONT         8        /* emergency front threshold (cm) */
 #define EMG_FRONT_HYST    2        /* +cm margin to clear EMERGENCY */
 #define IR_BUMPER_THRESH  2100     /* raw ADC; ir_left/right ABOVE this => bumper triggered. */
 #define EMERG_IR_DEG      30       /* rotation angle when IR bumper triggers EMERGENCY */
@@ -117,12 +115,6 @@
  * stopped, and IR readings stream to UART at 100ms cadence so a human
  * can wave obstacles in front of each sensor to find IR_BUMPER_THRESH. */
 #define CALIB_IR          0
-
-/* Period between occgrid wall extractions, in SensorTask ticks. With
- * SENS_PERIOD_MS=20 and 250 ticks, that's a 5 s cadence — frequent
- * enough that EKF picks up new walls quickly, infrequent enough that
- * a noisy single tick doesn't define the world. */
-#define WALLS_EXTRACT_PERIOD_TICKS  250
 
 /* Odometry calibration:
  *   1 = straight-line: drive V_CRUISE for 3 s, three reps; print enc deltas
@@ -334,11 +326,9 @@ void SensorTask(void *arg)
     osDelay(TASK_WARMUP_MS);
     odom_init();
     ekf_init();
-    /* occ_init(); */                 /* grid disabled — see SensorTask loop */
-    /* walls[] starts empty; the periodic walls_extract_from_grid() call
-     * below populates it once the occupancy grid has accumulated enough
-     * evidence (~5 s of driving). Until then EKF runs predict-only. */
-    uint32_t sens_tick = 0;
+    /* walls[] starts empty (occupancy grid + extractor was discarded).
+     * The EKF therefore runs predict-only unless something else populates
+     * walls[] via walls_add() — e.g. a hard-coded test seed. */
     for (;;) {
         us_buf_F[us_idx] = (int)(uwDiffCapture2 / US_TICKS_PER_CM);
         us_buf_L[us_idx] = (int)(uwDiffCapture3 / US_TICKS_PER_CM);
@@ -371,20 +361,6 @@ void SensorTask(void *arg)
         odom_get_last_delta_cm(&ds_R, &ds_L);
         ekf_predict(ds_L, ds_R);
         ekf_update(dF, dL, dR, sF, sL, sR);
-
-        /* Occupancy grid + automatic wall extraction disabled for now —
-         * focusing on Phase 2 EKF + the corner-turn behavior. Re-enable
-         * by uncommenting after grid behavior is validated. */
-        /*
-        float ex, ey, eth;
-        ekf_get(&ex, &ey, &eth);
-        occ_update(ex, ey, eth, dF, dL, dR, sF, sL, sR);
-        sens_tick++;
-        if ((sens_tick % WALLS_EXTRACT_PERIOD_TICKS) == 0) {
-            walls_extract_from_grid();
-        }
-        */
-        (void)sens_tick;   /* silence unused-warning while grid block is off */
 
         osDelay(SENS_PERIOD_MS);
     }
@@ -528,13 +504,6 @@ void DebugTask(void *arg)
                    hist_count,
                    ir_left, ir_right, ir_floor);
         }
-
-        /* Grid ASCII dump disabled while occgrid is commented out. */
-        /*
-        if (tick > 0 && (tick % DBG_OCC_DUMP_TICKS) == 0) {
-            occ_dump_ascii_uart();
-        }
-        */
 
         tick++;
         osDelay(DBG_PERIOD_MS);
