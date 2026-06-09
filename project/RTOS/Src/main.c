@@ -710,14 +710,23 @@ void ControlTask(void *arg)
                 bool l_had  = (dL_prev > 0 && dL_prev < D_OPEN);
                 bool r_open = (dR == 0) || (dR - dR_prev >= CORNER_RATE_CM);
                 bool l_open = (dL == 0) || (dL - dL_prev >= CORNER_RATE_CM);
-                bool corner = (corner_cooldown_ticks == 0) && ((r_had && r_open) || (l_had && l_open));
+                bool left_opened  = l_had && l_open;
+                bool right_opened = r_had && r_open;
+                bool corner = (corner_cooldown_ticks == 0) && (left_opened || right_opened);
 
                 if (corner) {
                     if (heading == HEAD_N) {
                         printf("\r\n>> CORNER-SKIP (head=N) dR=%d->%d dL=%d->%d",
                                dR_prev, dR, dL_prev, dL);
                     } else {
-                        bool turn_left = (bestTurnDirection() == DIR_LEFT);
+                        /* Only turn toward the physically open side.
+                         * If both sides open, use heading priority to pick. */
+                        bool turn_left;
+                        if (left_opened && right_opened) {
+                            turn_left = (bestTurnDirection() == DIR_LEFT);
+                        } else {
+                            turn_left = left_opened;
+                        }
                         printf("\r\n>> CORNER %s dR=%d->%d dL=%d->%d",
                                turn_left ? "L" : "R", dR_prev, dR, dL_prev, dL);
                         Motor_Drive(V_CRUISE + V_TRIM_L, V_CRUISE);
