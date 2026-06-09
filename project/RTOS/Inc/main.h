@@ -19,21 +19,13 @@
 
 
 /* ---------- FSM types ----------
- * Naive baseline FSM: Non-Island world + Dynamic Wall Tracking.
- * Pessimistic transitions — drop out of ALIGN at the first sign of
- * tracked-wall loss, re-enter ALIGN only with stable readings. */
+ * Simplified 3-state FSM: INIT -> DRIVE -> EMERGENCY.
+ * Navigation is heading-priority (N > E/W > S); no wall-following. */
 typedef enum {
     INIT = 0,                /* sensor warm-up; wait for valid readings */
-    SEEK,                    /* searching for any side wall */
-    ALIGN_PROGRESS,          /* tracked wall locked; angle-corrected cruise */
-    NON_ALIGN_PROGRESS,      /* no tracked wall; blind forward until one appears */
-    EMERGENCY                /* imminent front collision -> pivot */
+    DRIVE,                   /* normal cruise: straight + CORNER + VEER */
+    EMERGENCY                /* imminent front collision -> priority pivot */
 } DriveState;
-
-typedef enum {
-    TRACK_LEFT = 0,
-    TRACK_RIGHT
-} TrackingSide;
 
 /* canProgressDirection() return bitmask */
 #define DIR_LEFT     0x01
