@@ -98,6 +98,7 @@
 #define CORNER_RATE_CM         15   /* dR - dR_prev (or 0/D_OPEN) to flag corner */
 #define CORNER_TURN_DEG        90   /* pivot magnitude toward the opening */
 #define CORNER_COOLDOWN_TICKS  50   /* 1s lockout after a corner pivot */
+#define POST_ROT_IGNORE_TICKS   5   /* ticks to skip corner detection after any rotation */
 #define CORNER_ESCAPE_MS       700  /* forward drive after corner so we settle into the new wall */
 #define CORNER_LEAD_MS         500  /* forward drive BEFORE corner pivot so the back end clears
                                      * the wall edge that just ended (side US sits at the flank,
@@ -729,9 +730,6 @@ void ControlTask(void *arg)
                         osDelay(CORNER_ESCAPE_MS);
                     }
                     corner_cooldown_ticks = CORNER_COOLDOWN_TICKS;
-                    /* Flush stale prev-values so the next tick doesn't see a
-                     * spurious rate-jump from pre-rotation readings. */
-                    dR_prev = dR; dL_prev = dL;
                     break;
                 }
 
@@ -744,8 +742,8 @@ void ControlTask(void *arg)
                     rotate_iterative(ROTATE_VEER_DEG, true);
                     Motor_Drive(V_CRUISE + V_TRIM_L, V_CRUISE);
                     osDelay(ESCAPE_FORWARD_MS_VEER);
-                    veer_cooldown_ticks = VEER_COOLDOWN_TICKS;
-                    dR_prev = dR; dL_prev = dL;
+                    veer_cooldown_ticks   = VEER_COOLDOWN_TICKS;
+                    corner_cooldown_ticks = POST_ROT_IGNORE_TICKS;
                 } else if (veer_cooldown_ticks == 0 && dL > 0 && dL < D_MIN) {
                     printf("\r\n>> VEER R deg=%d dL=%d", ROTATE_VEER_DEG, dL);
                     veer_show_left = true;
@@ -754,8 +752,8 @@ void ControlTask(void *arg)
                     rotate_iterative(ROTATE_VEER_DEG, false);
                     Motor_Drive(V_CRUISE + V_TRIM_L, V_CRUISE);
                     osDelay(ESCAPE_FORWARD_MS_VEER);
-                    veer_cooldown_ticks = VEER_COOLDOWN_TICKS;
-                    dR_prev = dR; dL_prev = dL;
+                    veer_cooldown_ticks   = VEER_COOLDOWN_TICKS;
+                    corner_cooldown_ticks = POST_ROT_IGNORE_TICKS;
                 } else {
                     Motor_Drive(V_CRUISE + V_TRIM_L, V_CRUISE);
                 }
@@ -803,7 +801,7 @@ void ControlTask(void *arg)
                     Motor_Drive(V_CRUISE + V_TRIM_L, V_CRUISE);
                     osDelay(ESCAPE_FORWARD_MS_IR);
                 }
-                dR_prev = dR; dL_prev = dL;   /* flush stale delta after rotation */
+                corner_cooldown_ticks = POST_ROT_IGNORE_TICKS;
                 state = DRIVE;
             } break;
         }
