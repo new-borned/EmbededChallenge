@@ -64,7 +64,7 @@
  * resetting it, so motorInterrupt1/2 remain monotonic for odometry. */
 #define PIVOT_SUBSTEP_TICKS       30   /* encoder ticks per micro-pivot (~3°) */
 #define PIVOT_SUBSTEPS_90_L       24   /* micro-pivots for 90° LEFT  (calib 2026-05-27 final) */
-#define PIVOT_SUBSTEPS_90_R       25   /* micro-pivots for 90° RIGHT (calib 2026-05-27 final) */
+#define PIVOT_SUBSTEPS_90_R       24   /* micro-pivots for 90° RIGHT (calib 2026-05-27 final) */
 #define PIVOT_PAUSE_MS            10   /* brief stop between micro-pivots */
 #define PIVOT_SUBSTEP_TIMEOUT_MS  200  /* per-substep safety */
 #define POST_TURN_SETTLE_MS       300  /* let SensorTask median refresh after pivot */
@@ -105,6 +105,13 @@
 #define CORNER_TURN_DEG        90   /* pivot magnitude toward the opening */
 #define CORNER_COOLDOWN_TICKS  50   /* 1s lockout after a corner pivot */
 #define CORNER_ESCAPE_MS       700  /* forward drive after corner so we settle into the new wall */
+
+/* When the EMERGENCY-US pivot direction lands on cardinal NORTH, drive
+ * backward briefly first to give the back end room to swing through the
+ * 90° rotation. Side ultrasonic sits at the robot's flank, so an obstacle
+ * reading exactly EMG_FRONT cm away is too close for the rear to clear
+ * during pivot — back off to gain that physical margin. */
+#define N_PIVOT_BACKOFF_MS    1000  /* reverse drive duration before an N-pivot */
 
 /* Pivot calibration mode — when 1, ControlTask skips the FSM and runs a
  * 4x90° round-trip (right then left) so PIVOT_SUBSTEPS_90 can be measured
@@ -1026,6 +1033,22 @@ void ControlTask(void *arg)
                        first ? "NEW" : "KEEP", dF, dL, dR, ir_left, ir_right);
                 Motor_Stop();
                 osDelay(50);
+                /* If this 90° pivot will land the robot facing NORTH, back
+                 * up first so the rear has room to swing through the arc.
+                 * The side ultrasonic that gated this pivot only sees the
+                 * robot's flank — back-end swing isn't covered. */
+                if (emerg_turn_deg == EMERG_US_DEG) {
+                    CardHead after = emerg_turn_left
+                        ? (CardHead)((heading + 3u) % 4u)
+                        : (CardHead)((heading + 1u) % 4u);
+                    if (after == HEAD_N) {
+                        printf("\r\n>> N-BACKOFF %d ms", N_PIVOT_BACKOFF_MS);
+                        Motor_Drive(-V_CRUISE, -V_CRUISE);
+                        osDelay(N_PIVOT_BACKOFF_MS);
+                        Motor_Stop();
+                        osDelay(50);
+                    }
+                }
                 rotate_iterative(emerg_turn_deg, emerg_turn_left);
                 /* Only US-triggered (90°) pivots update the cardinal model —
                  * the 30° IR nudge isn't a clean quarter turn. */
