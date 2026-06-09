@@ -34,7 +34,6 @@
 #define SENS_PERIOD_MS    20
 #define IR_PERIOD_MS      20
 #define DBG_PERIOD_MS     100       /* DebugTask tick — LED refresh rate */
-#define DBG_PRINT_DIVIDER 5         /* printf snapshot every N ticks (500ms) */
 #define TASK_WARMUP_MS    200
 #define CTRL_WARMUP_MS    300
 
@@ -105,7 +104,7 @@
 #define CORNER_TURN_DEG        90   /* pivot magnitude toward the opening */
 #define CORNER_COOLDOWN_TICKS  50   /* 1s lockout after a corner pivot */
 #define CORNER_ESCAPE_MS       700  /* forward drive after corner so we settle into the new wall */
-#define CORNER_LEAD_MS        1000  /* forward drive BEFORE corner pivot so the back end clears
+#define CORNER_LEAD_MS         500  /* forward drive BEFORE corner pivot so the back end clears
                                      * the wall edge that just ended (side US sits at the flank,
                                      * so by the time the pivot starts the corner is at the side
                                      * — driving past it first gives the rear swing room). */
@@ -411,19 +410,13 @@ void IR_Task(void *arg)
  *              IR left  : LED2 solid
  *              IR right : LED3 solid
  *         c) Default: LED1..LED3 = state code binary, LED4 = side (R=0 / L=1)
- *    2) Edge log on every FSM state / side transition (printed once per change).
- *    3) Periodic snapshot every DBG_PRINT_DIVIDER ticks (= 500ms) with
- *       distances, stddev, side, emergency-commit info, and IR readings.
+ *  All UART output is now rotation-event driven (CORNER/VEER/EMERG/ANG-CORR)
+ *  in ControlTask. DebugTask only manages LEDs.
  *  Lowest priority so it never starves Sensor/IR/Control.
  * =========================================================================== */
 void DebugTask(void *arg)
 {
     (void)arg;
-    static const char *state_name[] = {
-        "INIT", "SEEK", "ALIGN_PROG", "NON_ALIGN_PROG", "EMERGENCY"
-    };
-    DriveState prev_state = (DriveState)0xFF;   /* force first-tick edge log */
-    TrackingSide prev_side = side;
     uint32_t tick = 0;
 
     osDelay(TASK_WARMUP_MS);
@@ -466,48 +459,9 @@ void DebugTask(void *arg)
             (side == TRACK_LEFT) ? BSP_LED_On(LED4) : BSP_LED_Off(LED4);
         }
 
-        /* --- Edge log ------------------------------------------------- */
-        if (state != prev_state) {
-            printf("\r\n[DBG-EDGE] %s -> %s  dF=%d dL=%d dR=%d side=%s",
-                   (prev_state == (DriveState)0xFF) ? "?" : state_name[prev_state],
-                   state_name[state],
-                   dF, dL, dR,
-                   side == TRACK_RIGHT ? "R" : "L");
-            prev_state = state;
-        }
-        if (side != prev_side) {
-            printf("\r\n[DBG-SIDE] %s -> %s",
-                   prev_side == TRACK_RIGHT ? "R" : "L",
-                   side      == TRACK_RIGHT ? "R" : "L");
-            prev_side = side;
-        }
-
-        /* --- Periodic snapshot (throttled to DBG_PRINT_DIVIDER ticks) - */
-        if ((tick % DBG_PRINT_DIVIDER) == 0) {
-            float ox, oy, oth, ex, ey, eth;
-            odom_get(&ox, &oy, &oth);
-            ekf_get(&ex, &ey, &eth);
-            /* With n_walls == 0 the EKF is predict-only so odom and ekf
-             * print identical — that's the sanity baseline. Phase 3 wall
-             * extraction is what makes the two diverge. */
-            static const char head_ch[4] = { 'N', 'E', 'S', 'W' };
-            printf("\r\n[DBG #%lu] st=%s side=%s head=%c "
-                   "odom=(%d,%d,%d) ekf=(%d,%d,%d) "
-                   "d(F/L/R)=%d/%d/%d s(F/L/R)=%d/%d/%d "
-                   "emg=%c commit=%c hist=%d ir(L/R/F)=%d/%d/%d",
-                   (unsigned long)tick,
-                   state_name[state],
-                   side == TRACK_RIGHT ? "R" : "L",
-                   head_ch[heading],
-                   (int)ox, (int)oy, (int)(oth * 57.2957795f),
-                   (int)ex, (int)ey, (int)(eth * 57.2957795f),
-                   dF, dL, dR,
-                   sF, sL, sR,
-                   isEmergency() ? '1' : '0',
-                   emerg_committed ? (emerg_turn_left ? 'L' : 'R') : '-',
-                   hist_count,
-                   ir_left, ir_right, ir_floor);
-        }
+        /* Rotation-only output policy: all diagnostic printf is in the
+         * ControlTask rotation branches (CORNER, VEER, EMERG, ANG-CORR,
+         * ROT-ITER). DebugTask only drives the LEDs. */
 
         tick++;
         osDelay(DBG_PERIOD_MS);
@@ -787,9 +741,6 @@ bool emergencyResolved(void)
 void ControlTask(void *arg)
 {
     (void)arg;
-    static const char *state_name[] = {
-        "INIT","SEEK","ALIGN_PROG","NON_ALIGN_PROG","EMERGENCY"
-    };
     uint32_t tick = 0;
 
     osDelay(CTRL_WARMUP_MS);
