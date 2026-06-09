@@ -715,17 +715,30 @@ void ControlTask(void *arg)
                 bool corner = (corner_cooldown_ticks == 0) && (left_opened || right_opened);
 
                 if (corner) {
-                    if (heading == HEAD_N) {
-                        printf("\r\n>> CORNER-SKIP (head=N) dR=%d->%d dL=%d->%d",
-                               dR_prev, dR, dL_prev, dL);
+                    /* Score the heading that results from each possible turn.
+                     * Only consider a direction if (a) that side physically opened
+                     * and (b) the resulting heading is strictly better (lower score)
+                     * than the current heading.  If no turn improves the heading,
+                     * skip and keep going straight. */
+                    CardHead after_l = (CardHead)((heading + 3u) % 4u);
+                    CardHead after_r = (CardHead)((heading + 1u) % 4u);
+                    int sc = (heading == HEAD_N) ? 0 : (heading == HEAD_S) ? 2 : 1;
+                    int sl = (after_l == HEAD_N) ? 0 : (after_l == HEAD_S) ? 2 : 1;
+                    int sr = (after_r == HEAD_N) ? 0 : (after_r == HEAD_S) ? 2 : 1;
+                    bool can_left  = left_opened  && (sl < sc);
+                    bool can_right = right_opened && (sr < sc);
+
+                    if (!can_left && !can_right) {
+                        printf("\r\n>> CORNER-SKIP head=%d dR=%d->%d dL=%d->%d",
+                               (int)heading, dR_prev, dR, dL_prev, dL);
                     } else {
-                        /* Only turn toward the physically open side.
-                         * If both sides open, use heading priority to pick. */
                         bool turn_left;
-                        if (left_opened && right_opened) {
-                            turn_left = (bestTurnDirection() == DIR_LEFT);
+                        if (can_left && can_right) {
+                            /* both open and both improve: pick better heading;
+                             * tie (E vs W from S) -> wider sensor side */
+                            turn_left = (sl < sr) || (sl == sr && dL >= dR);
                         } else {
-                            turn_left = left_opened;
+                            turn_left = can_left;
                         }
                         printf("\r\n>> CORNER %s dR=%d->%d dL=%d->%d",
                                turn_left ? "L" : "R", dR_prev, dR, dL_prev, dL);
