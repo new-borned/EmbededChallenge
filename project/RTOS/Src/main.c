@@ -63,7 +63,7 @@
  * resetting it, so motorInterrupt1/2 remain monotonic for odometry. */
 #define PIVOT_SUBSTEP_TICKS       30   /* encoder ticks per micro-pivot (~3°) */
 #define PIVOT_SUBSTEPS_90_L       24   /* micro-pivots for 90° LEFT  (calib 2026-05-27 final) */
-#define PIVOT_SUBSTEPS_90_R       24   /* micro-pivots for 90° RIGHT (calib 2026-05-27 final) */
+#define PIVOT_SUBSTEPS_90_R       25   /* micro-pivots for 90° RIGHT (calib 2026-05-27 final) */
 #define PIVOT_PAUSE_MS            10   /* brief stop between micro-pivots */
 #define PIVOT_SUBSTEP_TIMEOUT_MS  200  /* per-substep safety */
 #define POST_TURN_SETTLE_MS       300  /* let SensorTask median refresh after pivot */
@@ -100,7 +100,7 @@
 #define CORNER_COOLDOWN_TICKS  50   /* 1s lockout after a corner pivot */
 #define POST_ROT_IGNORE_TICKS   5   /* ticks to skip corner detection after any rotation */
 #define CORNER_ESCAPE_MS       700  /* forward drive after corner so we settle into the new wall */
-#define CORNER_LEAD_MS         500  /* forward drive BEFORE corner pivot so the back end clears
+#define CORNER_LEAD_MS        1000  /* forward drive BEFORE corner pivot so the back end clears
                                      * the wall edge that just ended (side US sits at the flank,
                                      * so by the time the pivot starts the corner is at the side
                                      * — driving past it first gives the rear swing room). */
