@@ -702,10 +702,13 @@ void ControlTask(void *arg)
                 if (corner_cooldown_ticks > 0) corner_cooldown_ticks--;
                 if (veer_cooldown_ticks   > 0) veer_cooldown_ticks--;
 
-                bool r_had  = (dR_prev > 0 && dR_prev <= D_TARGET);
-                bool l_had  = (dL_prev > 0 && dL_prev <= D_TARGET);
-                bool r_open = (dR == 0) || (dR > D_TARGET && dR - dR_prev >= CORNER_RATE_CM);
-                bool l_open = (dL == 0) || (dL > D_TARGET && dL - dL_prev >= CORNER_RATE_CM);
+                /* r_had: any real side echo last tick (< D_OPEN = no-wall sentinel).
+                 * r_open: this tick the reading jumped up by CORNER_RATE_CM or went
+                 *         to zero — wall ended, corridor opened on that side. */
+                bool r_had  = (dR_prev > 0 && dR_prev < D_OPEN);
+                bool l_had  = (dL_prev > 0 && dL_prev < D_OPEN);
+                bool r_open = (dR == 0) || (dR - dR_prev >= CORNER_RATE_CM);
+                bool l_open = (dL == 0) || (dL - dL_prev >= CORNER_RATE_CM);
                 bool corner = (corner_cooldown_ticks == 0) && ((r_had && r_open) || (l_had && l_open));
 
                 if (corner) {
