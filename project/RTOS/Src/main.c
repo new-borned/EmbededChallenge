@@ -105,13 +105,10 @@
 #define CORNER_TURN_DEG        90   /* pivot magnitude toward the opening */
 #define CORNER_COOLDOWN_TICKS  50   /* 1s lockout after a corner pivot */
 #define CORNER_ESCAPE_MS       700  /* forward drive after corner so we settle into the new wall */
-
-/* When the EMERGENCY-US pivot direction lands on cardinal NORTH, drive
- * backward briefly first to give the back end room to swing through the
- * 90° rotation. Side ultrasonic sits at the robot's flank, so an obstacle
- * reading exactly EMG_FRONT cm away is too close for the rear to clear
- * during pivot — back off to gain that physical margin. */
-#define N_PIVOT_BACKOFF_MS    1000  /* reverse drive duration before an N-pivot */
+#define CORNER_LEAD_MS        1000  /* forward drive BEFORE corner pivot so the back end clears
+                                     * the wall edge that just ended (side US sits at the flank,
+                                     * so by the time the pivot starts the corner is at the side
+                                     * — driving past it first gives the rear swing room). */
 
 /* Pivot calibration mode — when 1, ControlTask skips the FSM and runs a
  * 4x90° round-trip (right then left) so PIVOT_SUBSTEPS_90 can be measured
@@ -929,15 +926,32 @@ void ControlTask(void *arg)
                         lost_with_jump = (dL == 0) || (dL > D_TARGET && dL - dL_prev >= CORNER_RATE_CM);
                     }
                     if (corner_cooldown_ticks == 0 && had_wall && lost_with_jump) {
-                        bool turn_left = (side == TRACK_LEFT);   /* pivot INTO the open side */
-                        printf("\r\n>> CORNER %s dR=%d->%d dL=%d->%d",
-                               turn_left ? "L" : "R", dR_prev, dR, dL_prev, dL);
-                        Motor_Stop();
-                        osDelay(50);
-                        rotate_iterative(CORNER_TURN_DEG, turn_left);
-                        if (CORNER_TURN_DEG == 90) heading_apply_turn(turn_left);
-                        Motor_Drive(V_CRUISE + V_TRIM_L, V_CRUISE);
-                        osDelay(CORNER_ESCAPE_MS);
+                        if (heading == HEAD_N) {
+                            /* Already heading NORTH at this intersection —
+                             * pivoting into the side opening would rotate
+                             * AWAY from N. Skip the pivot, keep driving
+                             * forward; tracked wall is lost, so next tick
+                             * naturally demotes to NON_ALIGN_PROGRESS. */
+                            printf("\r\n>> CORNER-SKIP (head=N) dR=%d->%d dL=%d->%d",
+                                   dR_prev, dR, dL_prev, dL);
+                        } else {
+                            /* Non-N heading: take the corner pivot, but
+                             * drive forward CORNER_LEAD_MS first so the
+                             * back end is past the ended-wall edge before
+                             * the in-place rotation starts. */
+                            bool turn_left = (side == TRACK_LEFT);
+                            printf("\r\n>> CORNER %s lead=%d dR=%d->%d dL=%d->%d",
+                                   turn_left ? "L" : "R", CORNER_LEAD_MS,
+                                   dR_prev, dR, dL_prev, dL);
+                            Motor_Drive(V_CRUISE + V_TRIM_L, V_CRUISE);
+                            osDelay(CORNER_LEAD_MS);
+                            Motor_Stop();
+                            osDelay(50);
+                            rotate_iterative(CORNER_TURN_DEG, turn_left);
+                            if (CORNER_TURN_DEG == 90) heading_apply_turn(turn_left);
+                            Motor_Drive(V_CRUISE + V_TRIM_L, V_CRUISE);
+                            osDelay(CORNER_ESCAPE_MS);
+                        }
                         corner_cooldown_ticks = CORNER_COOLDOWN_TICKS;
                         break;   /* this tick fully consumed; next tick re-evaluates */
                     }
@@ -1033,22 +1047,6 @@ void ControlTask(void *arg)
                        first ? "NEW" : "KEEP", dF, dL, dR, ir_left, ir_right);
                 Motor_Stop();
                 osDelay(50);
-                /* If this 90° pivot will land the robot facing NORTH, back
-                 * up first so the rear has room to swing through the arc.
-                 * The side ultrasonic that gated this pivot only sees the
-                 * robot's flank — back-end swing isn't covered. */
-                if (emerg_turn_deg == EMERG_US_DEG) {
-                    CardHead after = emerg_turn_left
-                        ? (CardHead)((heading + 3u) % 4u)
-                        : (CardHead)((heading + 1u) % 4u);
-                    if (after == HEAD_N) {
-                        printf("\r\n>> N-BACKOFF %d ms", N_PIVOT_BACKOFF_MS);
-                        Motor_Drive(-V_CRUISE, -V_CRUISE);
-                        osDelay(N_PIVOT_BACKOFF_MS);
-                        Motor_Stop();
-                        osDelay(50);
-                    }
-                }
                 rotate_iterative(emerg_turn_deg, emerg_turn_left);
                 /* Only US-triggered (90°) pivots update the cardinal model —
                  * the 30° IR nudge isn't a clean quarter turn. */
