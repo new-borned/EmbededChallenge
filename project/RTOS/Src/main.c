@@ -58,7 +58,7 @@
 /* Map is fixed -- after this many CORNER pivots that end facing NORTH, the
  * robot has confirmed enough of its position relative to the map that it's
  * safe to bump cruise duty to V_CRUISE_BOOST. One-shot, never decays. */
-#define NORTH_TURN_THRESHOLD  3
+#define NORTH_TURN_THRESHOLD  4
 
 /* Iterative pivot — the only rotation primitive.
  * 90° = PIVOT_SUBSTEPS_90_x × PIVOT_SUBSTEP_TICKS encoder ticks total.
