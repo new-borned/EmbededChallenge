@@ -375,17 +375,16 @@ void IR_Task(void *arg)
 
 /* ===========================================================================
  *  Debug Layer — DebugTask
- *  Three outputs, refreshed every DBG_PERIOD_MS:
- *    1) LED visualization, priority high->low:
- *         a) VEER overlay (~2s after each VEER fires, even while ALIGN_PROG):
- *              LED1 = R-side US trigger,  LED4 = L-side US trigger
- *         b) EMERGENCY state, trigger source (committed in ControlTask):
- *              Front US : LED1+LED2+LED3+LED4 blink all (~5Hz)
- *              IR left  : LED2 solid
- *              IR right : LED3 solid
- *         c) Default: LED1..LED3 = state code binary, LED4 = side (R=0 / L=1)
- *  All UART output is now rotation-event driven (CORNER/VEER/EMERG/ANG-CORR)
- *  in ControlTask. DebugTask only manages LEDs.
+ *  LED visualization refreshed every DBG_PERIOD_MS, priority high->low:
+ *    a) VEER overlay (~2s after each VEER fires, even while ALIGN_PROG):
+ *         LED1 = R-side US trigger,  LED4 = L-side US trigger
+ *    b) EMERGENCY state, trigger source (committed in ControlTask):
+ *         Front US : LED1+LED2+LED3+LED4 blink all (~5Hz)
+ *         IR left  : LED2 solid
+ *         IR right : LED3 solid
+ *    c) cruise_boosted (post-NORTH_TURN_THRESHOLD): same all-LED blink as
+ *       EMERGENCY-US, but persistent — visual confirmation the boost latched.
+ *    d) Default: LED1..LED3 = state code binary, LED4 = cardinal heading.
  *  Lowest priority so it never starves Sensor/IR/Control.
  * =========================================================================== */
 void DebugTask(void *arg)
@@ -424,6 +423,18 @@ void DebugTask(void *arg)
                 BSP_LED_On(LED3);   /* R bumper -> turn L */
             } else {
                 BSP_LED_On(LED2);   /* L bumper -> turn R */
+            }
+        } else if (cruise_boosted) {
+            /* Boost engaged: same all-LED blink pattern as EMERGENCY-US. */
+            BSP_LED_Off(LED1);
+            BSP_LED_Off(LED2);
+            BSP_LED_Off(LED3);
+            BSP_LED_Off(LED4);
+            if ((tick & 1) == 0) {
+                BSP_LED_On(LED1);
+                BSP_LED_On(LED2);
+                BSP_LED_On(LED3);
+                BSP_LED_On(LED4);
             }
         } else {
             /* LED1..LED3 = state binary (INIT=000, DRIVE=001, EMERGENCY=010)
