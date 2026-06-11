@@ -39,20 +39,26 @@
 
 /* Distance thresholds (cm) */
 #define D_TARGET          8        /* wall-follow target distance */
-#define D_MIN             4        /* lower safety bound          */
+#define D_MIN             5        /* lower safety bound          */
 #define D_OPEN            150      /* > D_OPEN => "no wall on this side" */
-#define EMG_FRONT         8        /* emergency front threshold (cm) */
+#define EMG_FRONT         14        /* emergency front threshold (cm) */
 #define EMG_FRONT_HYST    2        /* +cm margin to clear EMERGENCY */
-#define IR_BUMPER_THRESH  2100     /* raw ADC; ir_left/right ABOVE this => bumper triggered. */
+#define IR_BUMPER_THRESH  1800     /* raw ADC; ir_left/right ABOVE this => bumper triggered. */
 #define EMERG_IR_DEG      30       /* rotation angle when IR bumper triggers EMERGENCY */
 #define EMERG_US_DEG      90       /* rotation angle when front ultrasonic triggers EMERGENCY */
 
 /* Motor PWM */
 #define PWM_PERIOD          20000
-#define V_CRUISE            17000   /* duty for all forward drive (SEEK / ALIGN / NON_ALIGN) */
-#define V_TRIM_L            500     /* extra duty on LEFT wheel for straight-line drift trim
+#define V_CRUISE            19000   /* duty for all forward drive (SEEK / ALIGN / NON_ALIGN) */
+#define V_CRUISE_BOOST      20000   /* duty after NORTH_TURN_THRESHOLD corner-to-N pivots */
+#define V_TRIM_L            0     /* extra duty on LEFT wheel for straight-line drift trim
                                      * (motors/wheels asymmetric -- same duty != same speed). */
 #define V_TURN              20000   /* full duty for max pivot torque */
+
+/* Map is fixed -- after this many CORNER pivots that end facing NORTH, the
+ * robot has confirmed enough of its position relative to the map that it's
+ * safe to bump cruise duty to V_CRUISE_BOOST. One-shot, never decays. */
+#define NORTH_TURN_THRESHOLD  3
 
 /* Iterative pivot — the only rotation primitive.
  * 90° = PIVOT_SUBSTEPS_90_x × PIVOT_SUBSTEP_TICKS encoder ticks total.
@@ -62,7 +68,7 @@
  * Note: each micro-pivot uses a start-snapshot of the encoder rather than
  * resetting it, so motorInterrupt1/2 remain monotonic for odometry. */
 #define PIVOT_SUBSTEP_TICKS       30   /* encoder ticks per micro-pivot (~3°) */
-#define PIVOT_SUBSTEPS_90_L       24   /* micro-pivots for 90° LEFT  (calib 2026-05-27 final) */
+#define PIVOT_SUBSTEPS_90_L       20   /* micro-pivots for 90° LEFT  (calib 2026-05-27 final) */
 #define PIVOT_SUBSTEPS_90_R       25   /* micro-pivots for 90° RIGHT (calib 2026-05-27 final) */
 #define PIVOT_PAUSE_MS            10   /* brief stop between micro-pivots */
 #define PIVOT_SUBSTEP_TIMEOUT_MS  200  /* per-substep safety */
@@ -197,6 +203,22 @@ static bool veer_show_left  = false;
 /* CORNER / VEER cooldowns */
 static int  veer_cooldown_ticks   = 0;
 static int  corner_cooldown_ticks = 0;
+
+/* North-turn boost: counts CORNER pivots that end with heading==HEAD_N.
+ * Once >= NORTH_TURN_THRESHOLD, cruise_boosted latches true and the cruise
+ * helper returns V_CRUISE_BOOST. Never decays back (one-way speed-up). */
+static int  north_turn_count = 0;
+static bool cruise_boosted   = false;
+
+/**
+ * @brief  Current forward duty — boosted after enough N-aligned corner turns.
+ * @return V_CRUISE_BOOST once north_turn_count has crossed the threshold,
+ *         V_CRUISE otherwise.
+ */
+static inline int cruise_duty(void)
+{
+    return cruise_boosted ? V_CRUISE_BOOST : V_CRUISE;
+}
 
 /* ===========================================================================
  *  Forward declarations
@@ -742,13 +764,26 @@ void ControlTask(void *arg)
                         }
                         printf("\r\n>> CORNER %s dR=%d->%d dL=%d->%d",
                                turn_left ? "L" : "R", dR_prev, dR, dL_prev, dL);
-                        Motor_Drive(V_CRUISE + V_TRIM_L, V_CRUISE);
+                        Motor_Drive(cruise_duty() + V_TRIM_L, cruise_duty());
                         osDelay(CORNER_LEAD_MS);
                         Motor_Stop();
                         osDelay(50);
                         rotate_iterative(CORNER_TURN_DEG, turn_left);
-                        if (CORNER_TURN_DEG == 90) heading_apply_turn(turn_left);
-                        Motor_Drive(V_CRUISE + V_TRIM_L, V_CRUISE);
+                        if (CORNER_TURN_DEG == 90) {
+                            heading_apply_turn(turn_left);
+                            if (heading == HEAD_N) {
+                                north_turn_count++;
+                                if (!cruise_boosted &&
+                                    north_turn_count >= NORTH_TURN_THRESHOLD) {
+                                    cruise_boosted = true;
+                                    printf("\r\n>> CRUISE BOOST engaged n=%d duty=%d",
+                                           north_turn_count, V_CRUISE_BOOST);
+                                } else {
+                                    printf("\r\n>> NORTH-TURN n=%d", north_turn_count);
+                                }
+                            }
+                        }
+                        Motor_Drive(cruise_duty() + V_TRIM_L, cruise_duty());
                         osDelay(CORNER_ESCAPE_MS);
                     }
                     corner_cooldown_ticks = CORNER_COOLDOWN_TICKS;
@@ -762,7 +797,7 @@ void ControlTask(void *arg)
                     veer_show_ticks = VEER_LED_SHOW_TICKS;
                     Motor_Stop(); osDelay(50);
                     rotate_iterative(ROTATE_VEER_DEG, true);
-                    Motor_Drive(V_CRUISE + V_TRIM_L, V_CRUISE);
+                    Motor_Drive(cruise_duty() + V_TRIM_L, cruise_duty());
                     osDelay(ESCAPE_FORWARD_MS_VEER);
                     veer_cooldown_ticks   = VEER_COOLDOWN_TICKS;
                     corner_cooldown_ticks = POST_ROT_IGNORE_TICKS;
@@ -772,12 +807,12 @@ void ControlTask(void *arg)
                     veer_show_ticks = VEER_LED_SHOW_TICKS;
                     Motor_Stop(); osDelay(50);
                     rotate_iterative(ROTATE_VEER_DEG, false);
-                    Motor_Drive(V_CRUISE + V_TRIM_L, V_CRUISE);
+                    Motor_Drive(cruise_duty() + V_TRIM_L, cruise_duty());
                     osDelay(ESCAPE_FORWARD_MS_VEER);
                     veer_cooldown_ticks   = VEER_COOLDOWN_TICKS;
                     corner_cooldown_ticks = POST_ROT_IGNORE_TICKS;
                 } else {
-                    Motor_Drive(V_CRUISE + V_TRIM_L, V_CRUISE);
+                    Motor_Drive(cruise_duty() + V_TRIM_L, cruise_duty());
                 }
 
                 if (++seek_clear_ticks >= EMERG_RELEASE_TICKS) emerg_committed = false;
@@ -820,7 +855,7 @@ void ControlTask(void *arg)
                 rotate_iterative(emerg_turn_deg, emerg_turn_left);
                 if (emerg_turn_deg == EMERG_US_DEG) heading_apply_turn(emerg_turn_left);
                 if (emerg_turn_deg == EMERG_IR_DEG) {
-                    Motor_Drive(V_CRUISE + V_TRIM_L, V_CRUISE);
+                    Motor_Drive(cruise_duty() + V_TRIM_L, cruise_duty());
                     osDelay(ESCAPE_FORWARD_MS_IR);
                 }
                 corner_cooldown_ticks = POST_ROT_IGNORE_TICKS;
