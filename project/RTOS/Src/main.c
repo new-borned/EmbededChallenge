@@ -43,13 +43,13 @@
 #define D_OPEN            150      /* > D_OPEN => "no wall on this side" */
 #define EMG_FRONT         14        /* emergency front threshold (cm) */
 #define EMG_FRONT_HYST    2        /* +cm margin to clear EMERGENCY */
-#define IR_BUMPER_THRESH  1800     /* raw ADC; ir_left/right ABOVE this => bumper triggered. */
+#define IR_BUMPER_THRESH  2100     /* raw ADC; ir_left/right ABOVE this => bumper triggered. */
 #define EMERG_IR_DEG      30       /* rotation angle when IR bumper triggers EMERGENCY */
 #define EMERG_US_DEG      90       /* rotation angle when front ultrasonic triggers EMERGENCY */
 
 /* Motor PWM */
 #define PWM_PERIOD          20000
-#define V_CRUISE            19000   /* duty for all forward drive (SEEK / ALIGN / NON_ALIGN) */
+#define V_CRUISE            18000   /* duty for all forward drive (SEEK / ALIGN / NON_ALIGN) */
 #define V_CRUISE_BOOST      20000   /* duty after NORTH_TURN_THRESHOLD corner-to-N pivots */
 #define V_TRIM_L            0     /* extra duty on LEFT wheel for straight-line drift trim
                                      * (motors/wheels asymmetric -- same duty != same speed). */
@@ -438,10 +438,6 @@ void DebugTask(void *arg)
             else { if ((tick & 1) == 0) BSP_LED_On(LED4); else BSP_LED_Off(LED4); }
         }
 
-        /* Rotation-only output policy: all diagnostic printf is in the
-         * ControlTask rotation branches (CORNER, VEER, EMERG, ANG-CORR,
-         * ROT-ITER). DebugTask only drives the LEDs. */
-
         tick++;
         osDelay(DBG_PERIOD_MS);
     }
@@ -537,8 +533,7 @@ void rotate_iterative(int degrees, bool left)
         Motor_Stop();
         total_ms += t + PIVOT_PAUSE_MS;
     }
-    printf("\r\n>> ROT-ITER %s deg=%d substeps=%d ms=%d",
-           left ? "L" : "R", degrees, substeps, total_ms);
+    (void)total_ms;
     osDelay(POST_TURN_SETTLE_MS);
 }
 
@@ -637,20 +632,16 @@ void ControlTask(void *arg)
 #if CALIB_PIVOT
     osDelay(1000);
     for (int i = 0; i < 4; i++) {
-        printf("\r\n>> CALIB L %d/4", i + 1);
         rotate_iterative(90, true);
         osDelay(1000);
     }
-    printf("\r\n>> CALIB DONE");
     Motor_Stop();
     for (;;) osDelay(1000);
 #endif
 
 #if CALIB_IR
     Motor_Stop();
-    printf("\r\n>> CALIB IR START");
     for (;;) {
-        printf("\r\n>> IR L=%d R=%d F=%d", ir_left, ir_right, ir_floor);
         osDelay(100);
     }
 #endif
@@ -658,7 +649,6 @@ void ControlTask(void *arg)
 #if CALIB_ODOM == 1
     osDelay(2000);
     for (int rep = 1; rep <= 3; rep++) {
-        printf("\r\n>> CALIB_ODOM straight %d/3 starts in 2 s", rep);
         osDelay(2000);
         odom_init();
         Motor_Drive(V_CRUISE + V_TRIM_L, V_CRUISE);
@@ -667,13 +657,9 @@ void ControlTask(void *arg)
         osDelay(500);
         int32_t dRt, dLt;
         odom_get_ticks(&dRt, &dLt);
-        long aR = dRt < 0 ? -dRt : dRt;
-        long aL = dLt < 0 ? -dLt : dLt;
-        printf("\r\n>> ODOM rep=%d dR=%ld dL=%ld mean_abs=%ld", rep, (long)dRt, (long)dLt, (aR + aL) / 2);
-        printf("\r\n>> measure floor distance now (5 s)...");
+        (void)dRt; (void)dLt;
         osDelay(5000);
     }
-    printf("\r\n>> CALIB_ODOM=1 DONE");
     Motor_Stop();
     for (;;) osDelay(1000);
 #endif
@@ -681,19 +667,18 @@ void ControlTask(void *arg)
 #if CALIB_ODOM == 2
     osDelay(2000);
     odom_init();
-    printf("\r\n>> CALIB_ODOM square start");
     for (int sq = 0; sq < 4; sq++) {
         float x0, y0, th0;
         odom_get(&x0, &y0, &th0);
+        (void)th0;
         Motor_Drive(V_CRUISE + V_TRIM_L, V_CRUISE);
         for (int t = 0; t < 200; t++) {
             osDelay(50);
             float x, y, th;
             odom_get(&x, &y, &th);
+            (void)th;
             float dx = x - x0, dy = y - y0;
             float disp = sqrtf(dx * dx + dy * dy);
-            printf("\r\n>> SQ sq=%d t=%d x=%d y=%d th=%d disp=%d",
-                   sq, t, (int)x, (int)y, (int)(th * 57.2957795f), (int)disp);
             if (disp >= 100.0f) break;
         }
         Motor_Stop();
@@ -702,9 +687,6 @@ void ControlTask(void *arg)
         osDelay(500);
     }
     Motor_Stop();
-    { float x, y, th; odom_get(&x, &y, &th);
-      printf("\r\n>> CALIB_ODOM square END x=%d y=%d th_deg=%d",
-             (int)x, (int)y, (int)(th * 57.2957795f)); }
     for (;;) osDelay(1000);
 #endif
 
@@ -750,10 +732,7 @@ void ControlTask(void *arg)
                     bool can_left  = left_opened  && (sl < sc);
                     bool can_right = right_opened && (sr < sc);
 
-                    if (!can_left && !can_right) {
-                        printf("\r\n>> CORNER-SKIP head=%d dR=%d->%d dL=%d->%d",
-                               (int)heading, dR_prev, dR, dL_prev, dL);
-                    } else {
+                    if (can_left || can_right) {
                         bool turn_left;
                         if (can_left && can_right) {
                             /* both open and both improve: pick better heading;
@@ -762,8 +741,6 @@ void ControlTask(void *arg)
                         } else {
                             turn_left = can_left;
                         }
-                        printf("\r\n>> CORNER %s dR=%d->%d dL=%d->%d",
-                               turn_left ? "L" : "R", dR_prev, dR, dL_prev, dL);
                         Motor_Drive(cruise_duty() + V_TRIM_L, cruise_duty());
                         osDelay(CORNER_LEAD_MS);
                         Motor_Stop();
@@ -776,10 +753,6 @@ void ControlTask(void *arg)
                                 if (!cruise_boosted &&
                                     north_turn_count >= NORTH_TURN_THRESHOLD) {
                                     cruise_boosted = true;
-                                    printf("\r\n>> CRUISE BOOST engaged n=%d duty=%d",
-                                           north_turn_count, V_CRUISE_BOOST);
-                                } else {
-                                    printf("\r\n>> NORTH-TURN n=%d", north_turn_count);
                                 }
                             }
                         }
@@ -792,7 +765,6 @@ void ControlTask(void *arg)
 
                 /* VEER: side wall too close -> pivot away */
                 if (veer_cooldown_ticks == 0 && dR > 0 && dR < D_MIN) {
-                    printf("\r\n>> VEER L deg=%d dR=%d", ROTATE_VEER_DEG, dR);
                     veer_show_left = false;
                     veer_show_ticks = VEER_LED_SHOW_TICKS;
                     Motor_Stop(); osDelay(50);
@@ -802,7 +774,6 @@ void ControlTask(void *arg)
                     veer_cooldown_ticks   = VEER_COOLDOWN_TICKS;
                     corner_cooldown_ticks = POST_ROT_IGNORE_TICKS;
                 } else if (veer_cooldown_ticks == 0 && dL > 0 && dL < D_MIN) {
-                    printf("\r\n>> VEER R deg=%d dL=%d", ROTATE_VEER_DEG, dL);
                     veer_show_left = true;
                     veer_show_ticks = VEER_LED_SHOW_TICKS;
                     Motor_Stop(); osDelay(50);
@@ -847,9 +818,7 @@ void ControlTask(void *arg)
                     emerg_committed = true;
                 }
                 seek_clear_ticks = 0;
-                printf("\r\n>> EMERG %s deg=%d commit=%s dF=%d dL=%d dR=%d",
-                       emerg_turn_left ? "L" : "R", emerg_turn_deg,
-                       first ? "NEW" : "KEEP", dF, dL, dR);
+                (void)first;
                 Motor_Stop();
                 osDelay(50);
                 rotate_iterative(emerg_turn_deg, emerg_turn_left);
